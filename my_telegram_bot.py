@@ -1,62 +1,43 @@
 import os
 from flask import Flask, request
-from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, filters
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=TOKEN)
 app = Flask(__name__)
 
-dispatcher = Dispatcher(bot, update_queue=None, workers=0, use_context=True)
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # Убедись, что в Render переменная окружения BOT_TOKEN задана
 
-# Кнопки меню
-def get_menu_keyboard():
-    buttons = [
-        [InlineKeyboardButton("Дорога", callback_data="Дорога")],
-        [InlineKeyboardButton("Отпуск", callback_data="Отпуск")],
-        [InlineKeyboardButton("Выходной", callback_data="Выходной")],
-        [InlineKeyboardButton("Выходной в рабочее время", callback_data="Выходной в рабочее время")],
-        [InlineKeyboardButton("Больничный", callback_data="Больничный")],
+# Обработчик команды /start — показывает кнопки меню
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        ["Дорога", "Отпуск"],
+        ["Выходной", "Выходной в рабочее время"],
+        ["Больничный"]
     ]
-    return InlineKeyboardMarkup(buttons)
-
-def start(update, context):
-    update.message.reply_text(
-        "Привет! Выбери свой статус:", 
-        reply_markup=get_menu_keyboard()
+    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await update.message.reply_text(
+        "Выберите статус из меню или отправьте произвольное сообщение:",
+        reply_markup=reply_markup,
     )
 
-def button_callback(update, context):
-    query = update.callback_query
-    user = query.from_user
-    status = query.data
+# Обработчик текстовых сообщений
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    # Можно тут сохранить статус, пользователя и т.п.
+    await update.message.reply_text("Ваш статус учтен, Спасибо")
 
-    # Сохраняем статус (логика может быть дополнена)
-    # Тут можно записать в файл, базу или лог
-
-    query.answer()
-    query.edit_message_text(f"Ваш статус '{status}' учтен, спасибо, {user.first_name}!")
-
-def handle_message(update, context):
-    update.message.reply_text("Ваш статус учтен, Спасибо")
-
-# Роут для webhook
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+async def webhook():
+    data = await request.get_json()
+    update = Update.de_json(data, application.bot)
+    await application.update_queue.put(update)
     return "OK"
 
-# Чтобы проверить, что сервер запущен
-@app.route("/")
-def index():
-    return "Bot is running"
-
-# Регистрируем обработчики
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-dispatcher.add_handler(telegram.ext.CallbackQueryHandler(button_callback))
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # Запускаем Flask (Render запускает именно это)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
