@@ -1,50 +1,62 @@
 import os
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from telegram.error import Forbidden
+from flask import Flask, request
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, filters
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
+bot = Bot(token=TOKEN)
+app = Flask(__name__)
 
-# Твои кнопки
-menu_buttons = [
-    [KeyboardButton("Дорога"), KeyboardButton("Отпуск")],
-    [KeyboardButton("Выходной"), KeyboardButton("Выходной в рабочее время")],
-    [KeyboardButton("Больничный")],
-]
+dispatcher = Dispatcher(bot, update_queue=None, workers=0, use_context=True)
 
-reply_markup = ReplyKeyboardMarkup(menu_buttons, resize_keyboard=True, one_time_keyboard=False)
+# Кнопки меню
+def get_menu_keyboard():
+    buttons = [
+        [InlineKeyboardButton("Дорога", callback_data="Дорога")],
+        [InlineKeyboardButton("Отпуск", callback_data="Отпуск")],
+        [InlineKeyboardButton("Выходной", callback_data="Выходной")],
+        [InlineKeyboardButton("Выходной в рабочее время", callback_data="Выходной в рабочее время")],
+        [InlineKeyboardButton("Больничный", callback_data="Больничный")],
+    ]
+    return InlineKeyboardMarkup(buttons)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        await update.message.reply_text(
-            "Привет! Выберите свой статус из меню ниже:",
-            reply_markup=reply_markup
-        )
-    except Forbidden:
-        print(f"Пользователь {update.message.from_user.id} заблокировал бота.")
+def start(update, context):
+    update.message.reply_text(
+        "Привет! Выбери свой статус:", 
+        reply_markup=get_menu_keyboard()
+    )
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+def button_callback(update, context):
+    query = update.callback_query
+    user = query.from_user
+    status = query.data
 
-    valid_statuses = ["Дорога", "Отпуск", "Выходной", "Выходной в рабочее время", "Больничный"]
+    # Сохраняем статус (логика может быть дополнена)
+    # Тут можно записать в файл, базу или лог
 
-    try:
-        if user_text in valid_statuses:
-            await update.message.reply_text(f"Вы выбрали: {user_text}. Ваш статус учтен, Спасибо!")
-            # Можно добавить сохранение статуса сюда
-        else:
-            await update.message.reply_text("Ваш статус учтен, Спасибо")
-    except Forbidden:
-        print(f"Пользователь {update.message.from_user.id} заблокировал бота.")
+    query.answer()
+    query.edit_message_text(f"Ваш статус '{status}' учтен, спасибо, {user.first_name}!")
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+def handle_message(update, context):
+    update.message.reply_text("Ваш статус учтен, Спасибо")
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+# Роут для webhook
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "OK"
 
-    print("Бот запущен...")
-    app.run_polling()
+# Чтобы проверить, что сервер запущен
+@app.route("/")
+def index():
+    return "Bot is running"
+
+# Регистрируем обработчики
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+dispatcher.add_handler(telegram.ext.CallbackQueryHandler(button_callback))
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
