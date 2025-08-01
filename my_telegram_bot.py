@@ -1,4 +1,3 @@
-
 import os
 import asyncio
 from flask import Flask, request
@@ -10,24 +9,20 @@ BOT_TOKEN = "8304128948:AAGfzX5TIABL3DVKkmynWovRvEEVvtPsTzg"
 RENDER_EXTERNAL_HOSTNAME = "technomage.onrender.com"
 WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}/{BOT_TOKEN}"
 
-# === Flask приложение ===
 app = Flask(__name__)
-
-# === Telegram приложение ===
 application = Application.builder().token(BOT_TOKEN).build()
 
-# === Установка webhook при запуске ===
-@app.before_first_request
-def init_webhook():
-    print(f"Устанавливаю webhook на: {WEBHOOK_URL}")
-    asyncio.get_event_loop().create_task(application.bot.set_webhook(WEBHOOK_URL))
+webhook_set = False  # флаг, что webhook установлен
 
-# === Простая стартовая страница ===
 @app.route('/')
 def index():
+    global webhook_set
+    if not webhook_set:
+        print(f"Устанавливаю webhook на: {WEBHOOK_URL}")
+        asyncio.get_event_loop().create_task(application.bot.set_webhook(WEBHOOK_URL))
+        webhook_set = True
     return "Бот запущен и работает!"
 
-# === Обработчик команды /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         ["Дорога", "Отпуск"],
@@ -40,11 +35,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# === Обработчик любого текстового сообщения ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Ваш статус учтен, спасибо!")
 
-# === Webhook — Telegram отправляет сюда обновления ===
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json()
@@ -52,11 +45,9 @@ def webhook():
     asyncio.run(application.update_queue.put(update))
     return "OK"
 
-# === Регистрация обработчиков ===
 application.add_handler(CommandHandler("start", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# === Запуск Flask-приложения ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
 
