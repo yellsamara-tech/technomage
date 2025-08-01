@@ -5,6 +5,11 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 app = Flask(__name__)
 
+# Простая стартовая страница для проверки, что сервер запущен
+@app.route('/')
+def index():
+    return "Бот запущен и работает!"
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # Убедись, что в Render переменная окружения BOT_TOKEN задана
 
 # Обработчик команды /start — показывает кнопки меню
@@ -23,9 +28,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик текстовых сообщений
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    # Можно тут сохранить статус, пользователя и т.п.
+    # Здесь можно добавить логику записи статуса
     await update.message.reply_text("Ваш статус учтен, Спасибо")
 
+# Маршрут webhook, по которому Телеграм будет слать обновления
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 async def webhook():
     data = await request.get_json()
@@ -39,5 +45,5 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Запускаем Flask (Render запускает именно это)
+    # Запускаем Flask, прослушиваем порт из переменной окружения (Render подставит)
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
