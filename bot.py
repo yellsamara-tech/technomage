@@ -1,53 +1,74 @@
-import os
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils import executor
+from aiogram.dispatcher import FSMContext
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from datetime import datetime
 import asyncio
-from flask import Flask, request
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import os
 
-# === Настройки бота ===
-BOT_TOKEN = "8304128948:AAGfzX5TIABL3DVKkmynWovRvEEVvtPsTzg"
-RENDER_EXTERNAL_HOSTNAME = "technomage.onrender.com"
-WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}/{BOT_TOKEN}"
+from config import BOT_TOKEN, ADMIN_EMAIL, TIMEZONE
+from database import init_db, add_user, get_user_by_id, update_status, get_status_matrix
+from scheduler import start_scheduler
+from utils import send_email_report, get_day_column, generate_status_keyboard
 
-app = Flask(__name__)
-application = Application.builder().token(BOT_TOKEN).build()
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
 
-webhook_set = False  # флаг, что webhook установлен
+# FSM для регистрации
+class RegisterState(StatesGroup):
+    full_name = State()
+    tab_number = State()
 
-@app.route('/')
-def index():
-    global webhook_set
-    if not webhook_set:
-        print(f"Устанавливаю webhook на: {WEBHOOK_URL}")
-        asyncio.get_event_loop().create_task(application.bot.set_webhook(WEBHOOK_URL))
-        webhook_set = True
-    return "Бот запущен и работает!"
+@dp.message_handler(commands=['start'])
+async def cmd_start(message: types.Message, state: FSMContext):
+    user = get_user_by_id(message.from_user.id)
+    if user:
+        await message.answer(f"Вы уже зарегистрированы, {user[2]}!\nНапишите свой статус на сегодня:", reply_markup=generate_status_keyboard())
+    else:
+        await state.set_state(RegisterState.full_name.state)
+        await message.answer("Добро пожаловать!\nВведите ваше ФИО:")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        ["Дорога", "Отпуск"],
-        ["Выходной", "Выходной в рабочее время"],
-        ["Больничный"]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-    await update.message.reply_text(
-        "Выберите статус из меню или отправьте произвольное сообщение:",
-        reply_markup=reply_markup
-    )
+@dp.message_handler(state=RegisterState.full_name)
+async def process_full_name(message: types.Message, state: FSMContext):
+    await state.update_data(full_name=message.text)
+    await message.answer("Теперь введите ваш табельный номер:")
+    await state.set_state(RegisterState.tab_number.state)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ваш статус учтен, спасибо!")
+@dp.message_handler(state=RegisterState.tab_number)
+async def process_tab_number(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    full_name = data['full_name']
+    tab_number = message.text.strip()
+    add_user(user_id=message.from_user.id, tab_number=tab_number, full_name=full_name)
+    await message.answer("Регистрация завершена!\nТеперь укажите статус на сегодня:", reply_markup=generate_status_keyboard())
+    await state.finish()
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json()
-    update = Update.de_json(data, application.bot)
-    asyncio.run(application.update_queue.put(update))
-    return "OK"
+@dp.message_handler(lambda msg: msg.text.lower() in ['на месте', 'отпуск', 'больничный', 'командировка'])
+async def quick_status(message: types.Message):
+    now = datetime.now().astimezone(TIMEZONE)
+    update_status(message.from_user.id, now.day, message.text)
+    await message.answer(f"Статус '{message.text}' записан на {now.strftime('%d.%m.%Y')}.")
 
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+@dp.message_handler(commands=['статус'])
+async def show_status(message: types.Message):
+    now = datetime.now().astimezone(TIMEZONE)
+    user = get_user_by_id(message.from_user.id)
+    if not user:
+        await message.answer("Вы ещё не зарегистрированы. Введите /start.")
+        return
+    col = get_day_column(now.day)
+    await message.answer(f"Ваш статус на сегодня ({now.day}): {user[col] or 'не установлен'}")
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
+@dp.message_handler()
+async def custom_status(message: types.Message):
+    now = datetime.now().astimezone(TIMEZONE)
+    update_status(message.from_user.id, now.day, message.text)
+    await message.answer(f"Установлен пользовательский статус: {message.text}")
 
+if __name__ == '__main__':
+    init_db()
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_scheduler(bot))
+    executor.start_polling(dp, skip_updates=True)
