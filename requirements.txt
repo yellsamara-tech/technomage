@@ -1,2 +1,4 @@
-flask>=2.0
-python-telegram-bot==20.3
+aiogram==2.25.1
+python-dotenv
+apscheduler
+pytz
