@@ -1,63 +1,79 @@
 import os
+import psycopg2
+from psycopg2.extras import DictCursor
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler,
-    MessageHandler, ContextTypes, filters, ConversationHandler
-)
-from database import init_db, is_registered, register_user, get_full_name
+from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, filters
 
-TOKEN = os.environ["BOT_TOKEN"]
+# Инициализация подключения к базе
+def init_db():
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise Exception("DATABASE_URL environment variable not set")
+    conn = psycopg2.connect(db_url, cursor_factory=DictCursor)
+    return conn
 
-ASK_NAME = 1  # Этап диалога
+# Проверка, зарегистрирован ли пользователь
+def is_registered(user_id: int, conn) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM users WHERE user_id = %s", (user_id,))
+        return cur.fetchone() is not None
 
+# Регистрация пользователя (user_id, full_name)
+def register_user(user_id: int, full_name: str, conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO users (user_id, full_name) VALUES (%s, %s) ON CONFLICT (user_id) DO NOTHING",
+            (user_id, full_name)
+        )
+        conn.commit()
+
+# Получить ФИО пользователя из БД
+def get_full_name(user_id: int, conn) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT full_name FROM users WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        return row["full_name"] if row else None
+
+# Обработчик команды /start (по желанию)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if is_registered(user_id):
-        full_name = get_full_name(user_id)
-        await update.message.reply_text(f"С возвращением, {full_name}!")
+    conn = context.bot_data['conn']
+    if is_registered(user_id, conn):
+        full_name = get_full_name(user_id, conn)
+        await update.message.reply_text(f"Привет, {full_name}! Вы уже зарегистрированы.")
     else:
-        await update.message.reply_text("Привет! Пожалуйста, введи своё ФИО для регистрации:")
-        return ASK_NAME
-    return ConversationHandler.END
+        await update.message.reply_text("Привет! Пожалуйста, напиши своё ФИО для регистрации.")
 
-async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Обработчик всех текстовых сообщений (регистрация новых пользователей)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    full_name = update.message.text.strip()
-    register_user(user_id, full_name)
-    await update.message.reply_text(f"Спасибо, {full_name}, вы зарегистрированы.")
-    return ConversationHandler.END
+    text = update.message.text.strip()
+    conn = context.bot_data['conn']
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if is_registered(user_id):
-        name = get_full_name(user_id)
-        await update.message.reply_text(f"{name}, ваш статус: 🟢 Активен.")
+    if not is_registered(user_id, conn):
+        register_user(user_id, text, conn)
+        await update.message.reply_text(f"Спасибо, {text}, вы успешно зарегистрированы!")
     else:
-        await update.message.reply_text("Вы не зарегистрированы. Напишите /start для начала.")
-
-async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if is_registered(user_id):
-        await update.message.reply_text("Я вас понял 👍")
-    else:
-        await update.message.reply_text("Пожалуйста, введите /start и укажите ФИО для регистрации.")
+        full_name = get_full_name(user_id, conn)
+        await update.message.reply_text(f"Вы уже зарегистрированы как {full_name}.")
 
 def main():
-    init_db()
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        raise Exception("BOT_TOKEN environment variable not set")
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    conn = init_db()
 
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)]},
-        fallbacks=[MessageHandler(filters.ALL, fallback)]
-    )
+    application = ApplicationBuilder().token(token).build()
 
-    app.add_handler(conv_handler)
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback))
+    # Кладём подключение в bot_data для доступа из обработчиков
+    application.bot_data['conn'] = conn
 
-    app.run_polling()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("Бот запущен...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
