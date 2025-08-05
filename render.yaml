@@ -1,5 +1,14 @@
-envVars:
-  - key: BOT_TOKEN
-    sync: false
-  - key: DATABASE_URL
-    sync: false
+services:
+  - type: web
+    name: technomage-bot
+    env: python
+    buildCommand: |
+      apt-get update && apt-get install -y build-essential libpq-dev
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
