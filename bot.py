@@ -1,74 +1,63 @@
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils import executor
-from aiogram.dispatcher import FSMContext
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from datetime import datetime
-import asyncio
 import os
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler,
+    MessageHandler, ContextTypes, filters, ConversationHandler
+)
+from database import init_db, is_registered, register_user, get_full_name
 
-from config import BOT_TOKEN, ADMIN_EMAIL, TIMEZONE
-from database import init_db, add_user, get_user_by_id, update_status, get_status_matrix
-from scheduler import start_scheduler
-from utils import send_email_report, get_day_column, generate_status_keyboard
+TOKEN = os.environ["BOT_TOKEN"]
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+ASK_NAME = 1  # Этап диалога
 
-# FSM для регистрации
-class RegisterState(StatesGroup):
-    full_name = State()
-    tab_number = State()
-
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message, state: FSMContext):
-    user = get_user_by_id(message.from_user.id)
-    if user:
-        await message.answer(f"Вы уже зарегистрированы, {user[2]}!\nНапишите свой статус на сегодня:", reply_markup=generate_status_keyboard())
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_registered(user_id):
+        full_name = get_full_name(user_id)
+        await update.message.reply_text(f"С возвращением, {full_name}!")
     else:
-        await state.set_state(RegisterState.full_name.state)
-        await message.answer("Добро пожаловать!\nВведите ваше ФИО:")
+        await update.message.reply_text("Привет! Пожалуйста, введи своё ФИО для регистрации:")
+        return ASK_NAME
+    return ConversationHandler.END
 
-@dp.message_handler(state=RegisterState.full_name)
-async def process_full_name(message: types.Message, state: FSMContext):
-    await state.update_data(full_name=message.text)
-    await message.answer("Теперь введите ваш табельный номер:")
-    await state.set_state(RegisterState.tab_number.state)
+async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    full_name = update.message.text.strip()
+    register_user(user_id, full_name)
+    await update.message.reply_text(f"Спасибо, {full_name}, вы зарегистрированы.")
+    return ConversationHandler.END
 
-@dp.message_handler(state=RegisterState.tab_number)
-async def process_tab_number(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    full_name = data['full_name']
-    tab_number = message.text.strip()
-    add_user(user_id=message.from_user.id, tab_number=tab_number, full_name=full_name)
-    await message.answer("Регистрация завершена!\nТеперь укажите статус на сегодня:", reply_markup=generate_status_keyboard())
-    await state.finish()
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_registered(user_id):
+        name = get_full_name(user_id)
+        await update.message.reply_text(f"{name}, ваш статус: 🟢 Активен.")
+    else:
+        await update.message.reply_text("Вы не зарегистрированы. Напишите /start для начала.")
 
-@dp.message_handler(lambda msg: msg.text.lower() in ['на месте', 'отпуск', 'больничный', 'командировка'])
-async def quick_status(message: types.Message):
-    now = datetime.now().astimezone(TIMEZONE)
-    update_status(message.from_user.id, now.day, message.text)
-    await message.answer(f"Статус '{message.text}' записан на {now.strftime('%d.%m.%Y')}.")
+async def fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_registered(user_id):
+        await update.message.reply_text("Я вас понял 👍")
+    else:
+        await update.message.reply_text("Пожалуйста, введите /start и укажите ФИО для регистрации.")
 
-@dp.message_handler(commands=['статус'])
-async def show_status(message: types.Message):
-    now = datetime.now().astimezone(TIMEZONE)
-    user = get_user_by_id(message.from_user.id)
-    if not user:
-        await message.answer("Вы ещё не зарегистрированы. Введите /start.")
-        return
-    col = get_day_column(now.day)
-    await message.answer(f"Ваш статус на сегодня ({now.day}): {user[col] or 'не установлен'}")
-
-@dp.message_handler()
-async def custom_status(message: types.Message):
-    now = datetime.now().astimezone(TIMEZONE)
-    update_status(message.from_user.id, now.day, message.text)
-    await message.answer(f"Установлен пользовательский статус: {message.text}")
-
-if __name__ == '__main__':
+def main():
     init_db()
-    loop = asyncio.get_event_loop()
-    loop.create_task(start_scheduler(bot))
-    executor.start_polling(dp, skip_updates=True)
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={ASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)]},
+        fallbacks=[MessageHandler(filters.ALL, fallback)]
+    )
+
+    app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback))
+
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
