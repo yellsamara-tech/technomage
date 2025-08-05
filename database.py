@@ -1,46 +1,27 @@
 import sqlite3
-from datetime import datetime
 
-DB_FILE = "status.db"
+DB_FILE = "users.db"
 
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        days_columns = ", ".join([f"d{i} TEXT" for i in range(1, 32)])
-        cursor.execute(f"""
+        conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
-                tab_number TEXT,
-                full_name TEXT,
-                {days_columns}
+                full_name TEXT
             )
-        """)
-        conn.commit()
+        ''')
 
-def add_user(user_id, tab_number, full_name):
+def is_registered(user_id):
     with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-        if cursor.fetchone():
-            return
-        cursor.execute("INSERT INTO users (user_id, tab_number, full_name) VALUES (?, ?, ?)", (user_id, tab_number, full_name))
-        conn.commit()
+        cur = conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+        return cur.fetchone() is not None
 
-def get_user_by_id(user_id):
+def register_user(user_id, full_name):
     with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-        return cursor.fetchone()
+        conn.execute("INSERT OR REPLACE INTO users (user_id, full_name) VALUES (?, ?)", (user_id, full_name))
 
-def update_status(user_id, day, status):
+def get_full_name(user_id):
     with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        column = f"d{day}"
-        cursor.execute(f"UPDATE users SET {column} = ? WHERE user_id = ?", (status, user_id))
-        conn.commit()
-
-def get_status_matrix():
-    with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users")
-        return cursor.fetchall()
+        cur = conn.execute("SELECT full_name FROM users WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
