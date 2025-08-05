@@ -1,4 +1,1 @@
-aiogram==2.25.1
-python-dotenv
-apscheduler
-pytz
+python-telegram-bot==20.6
