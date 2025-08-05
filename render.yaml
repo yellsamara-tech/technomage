@@ -3,7 +3,7 @@ services:
     name: telegram-status-bot
     runtime: python
     pythonVersion: 3.11
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip setuptools wheel && pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: TOKEN
