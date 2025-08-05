@@ -9,6 +9,7 @@ from telegram.ext import (
 from database import init_db, register_user, is_registered
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+DB_URL = os.getenv("DATABASE_URL")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
