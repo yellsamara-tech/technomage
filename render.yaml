@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: telegram-status-bot
+    runtime: python
+    pythonVersion: 3.11
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
