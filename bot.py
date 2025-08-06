@@ -1,31 +1,41 @@
 import os
-import asyncio
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    ContextTypes,
-    CommandHandler,
-)
-from database import init_db, register_user, is_registered
+from fastapi import FastAPI, Request
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import Update
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from dotenv import load_dotenv
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-DB_URL = os.getenv("DATABASE_URL")
+load_dotenv()
 
+TOKEN = os.getenv("TOKEN")
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например https://your-app-name.onrender.com
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = await init_db()
-    user_id = update.effective_user.id
-    full_name = update.effective_user.full_name
-
-    if not await is_registered(conn, user_id):
-        await register_user(conn, user_id, full_name)
-        await update.message.reply_text("Вы успешно зарегистрированы.")
-    else:
-        await update.message.reply_text("Вы уже зарегистрированы.")
-    await conn.close()
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+app = FastAPI()
 
 
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.run_polling()
+@dp.message()
+async def echo_handler(message: types.Message):
+    await message.reply(f"Привет, {message.from_user.full_name}!")
+
+
+@app.on_event("startup")
+async def on_startup():
+    await bot.set_webhook(WEBHOOK_URL)
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await bot.delete_webhook()
+
+
+# Обрабатываем входящие запросы (webhook)
+@app.post(WEBHOOK_PATH)
+async def webhook_handler(request: Request):
+    body = await request.body()
+    update = Update.model_validate_json(body)
+    await dp.feed_update(bot, update)
+    return {"ok": True}
