@@ -1,2 +1,4 @@
-python-telegram-bot==21.1
-asyncpg==0.29.0
+fastapi
+uvicorn
+aiogram==3.5.0
+python-dotenv
