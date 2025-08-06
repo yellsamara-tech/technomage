@@ -1,5 +1,0 @@
-fastapi
-uvicorn
-aiogram==3.5.0
-python-dotenv
-psycopg[binary]
