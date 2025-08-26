@@ -102,7 +102,7 @@ async def send_daily_reminder():
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.process_update(update)
+    await dp.update_router.feed_update(update)  # корректно для aiogram 3.x
     return web.Response()
 
 async def on_startup(app):
@@ -112,7 +112,7 @@ async def on_startup(app):
 
 async def on_cleanup(app):
     await bot.delete_webhook()
-    await bot.session.close()  # важно закрыть сессию
+    await bot.session.close()  # закрываем сессию
 
 # ----- Запуск webhook -----
 async def start_webhook():
