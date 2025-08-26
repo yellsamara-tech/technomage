@@ -8,17 +8,25 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pytz import timezone
 from db import init_db, add_user, get_user, update_status, get_all_users
 
+import nest_asyncio
+nest_asyncio.apply()  # разрешаем вложенные event loop, важно для Render
+
 # ----- Переменные окружения -----
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден")
 
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+if not RENDER_URL:
+    raise ValueError("❌ RENDER_EXTERNAL_URL не найден")
+
+PORT = int(os.getenv("PORT", 5000))
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"{os.getenv('RENDER_EXTERNAL_URL')}{WEBHOOK_PATH}"
-PORT = int(os.getenv("PORT", 5000))
+WEBHOOK_URL = f"{RENDER_URL}{WEBHOOK_PATH}"
 
 # ----- Горячие кнопки -----
 status_kb = types.ReplyKeyboardMarkup(
@@ -98,14 +106,13 @@ async def handle(request):
     return web.Response()
 
 async def on_startup(app):
-    # Удаляем старый webhook
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
     print(f"Webhook установлен: {WEBHOOK_URL}")
 
 async def on_cleanup(app):
     await bot.delete_webhook()
-    await bot.session.close()  # <-- закрываем aiohttp session
+    await bot.session.close()  # важно закрыть сессию
 
 # ----- Запуск webhook -----
 async def start_webhook():
@@ -132,6 +139,13 @@ async def main():
     # Запуск webhook
     await start_webhook()
 
+    # Держим цикл живым
+    while True:
+        await asyncio.sleep(3600)
+
 # ----- Запуск -----
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    print("Бот запущен. Webhook сервер работает...")
+    loop.run_forever()
