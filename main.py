@@ -89,18 +89,21 @@ async def send_daily_reminder():
 
 # ----- Webhook сервер -----
 async def handle(request):
-    update = types.Update(**await request.json())
-    await dp.process_update(update)
+    data = await request.json()
+    update = types.Update(**data)
+    await dp.feed_update(update)  # исправлено для aiogram v3
     return web.Response()
 
 async def on_startup(app):
+    # Удаляем старый webhook, чтобы не было конфликта
+    await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
     print(f"Webhook установлен: {WEBHOOK_URL}")
 
 async def on_cleanup(app):
     await bot.delete_webhook()
 
-# ----- Запуск aiohttp без web.run_app -----
+# ----- Запуск webhook -----
 async def start_webhook():
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, handle)
@@ -122,11 +125,8 @@ async def main():
     scheduler.add_job(send_daily_reminder, 'cron', hour=18, minute=0)
     scheduler.start()
 
-    # Запуск webhook + бот
-    await asyncio.gather(
-        start_webhook(),
-        dp.start_polling(bot)  # polling на время разработки; можно оставить или заменить webhook полностью
-    )
+    # Запуск webhook
+    await start_webhook()
 
 # ----- Запуск -----
 if __name__ == "__main__":
