@@ -8,9 +8,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pytz import timezone
 from db import init_db, add_user, get_user, update_status, get_all_users
 
-import nest_asyncio
-nest_asyncio.apply()  # нужно для Render, разрешаем вложенные event loop
-
 # ----- Переменные окружения -----
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -102,7 +99,7 @@ async def send_daily_reminder():
 async def handle(request: web.Request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.process_update(update)  # корректно для aiogram 3.x
+    await dp.process_update(update)  # <-- исправлено для aiogram 3.x
     return web.Response(text="ok")
 
 async def on_startup(app):
@@ -112,7 +109,7 @@ async def on_startup(app):
 
 async def on_cleanup(app):
     await bot.delete_webhook()
-    await bot.session.close()  # закрываем сессию
+    await bot.session.close()
 
 # ----- Запуск webhook -----
 async def start_webhook():
@@ -145,7 +142,4 @@ async def main():
 
 # ----- Запуск -----
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    print("Бот запущен. Webhook сервер работает...")
-    loop.run_forever()
+    asyncio.run(main())
