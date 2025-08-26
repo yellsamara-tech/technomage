@@ -1,0 +1,12 @@
+services:
+  - type: worker
+    name: telegram-bot
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    envVars:
+      - key: BOT_TOKEN
+        sync: false   # задашь вручную в Render Dashboard
+      - key: DATABASE_URL
+        sync: false   # Render PostgreSQL выдаст автоматически
