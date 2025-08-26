@@ -4,7 +4,12 @@ from datetime import date
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from db import init_db, add_user, get_user, update_status, get_all_users, get_status_history, find_user_by_name, set_user_status, get_admins
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from pytz import timezone
+from db import (
+    init_db, add_user, get_user, update_status, get_all_users,
+    get_status_history, find_user_by_name, get_admins
+)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -13,6 +18,7 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Кнопки статусов
 status_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✅ Работаю"), KeyboardButton(text="🤒 Болею")],
@@ -22,6 +28,7 @@ status_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# Команда /start
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     user = await get_user(message.from_user.id)
@@ -38,10 +45,12 @@ async def start_handler(message: types.Message):
     else:
         await message.answer("Привет! Введи своё ФИО для регистрации.")
 
+# Обработка сообщений
 @dp.message()
 async def process_message(message: types.Message):
     user = await get_user(message.from_user.id)
     if not user:
+        # Регистрация нового пользователя
         full_name = message.text.strip()
         await add_user(message.from_user.id, full_name)
         await message.answer(
@@ -63,7 +72,7 @@ async def process_message(message: types.Message):
         await message.answer("Выбери новый статус или напиши свой текстом 👇", reply_markup=status_kb)
         return
 
-    # Своё сообщение
+    # Свой вариант
     if text == "✍️ Свой вариант":
         await message.answer("Напиши свой статус сообщением 👇")
         return
@@ -116,8 +125,25 @@ async def status_history(message: types.Message):
     text = "\n".join([f"{h['status_date']}: {h['status']}" for h in history])
     await message.answer(f"📜 История твоих статусов:\n{text}")
 
+# Напоминание всем пользователям в 18:00 по Самарскому времени
+async def send_daily_reminder():
+    users = await get_all_users()
+    for user in users:
+        await bot.send_message(
+            user['id'],
+            "⏰ Пожалуйста, обнови свой статус на сегодня!",
+            reply_markup=status_kb
+        )
+
+# Главная функция
 async def main():
     await init_db()
+
+    # Планировщик
+    scheduler = AsyncIOScheduler(timezone=timezone("Asia/Samarkand"))
+    scheduler.add_job(send_daily_reminder, 'cron', hour=18, minute=0)  # 18:00 по Самарскому времени
+    scheduler.start()
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
