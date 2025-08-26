@@ -9,7 +9,7 @@ from pytz import timezone
 from db import init_db, add_user, get_user, update_status, get_all_users
 
 import nest_asyncio
-nest_asyncio.apply()  # разрешаем вложенные event loop, важно для Render
+nest_asyncio.apply()  # нужно для Render, разрешаем вложенные event loop
 
 # ----- Переменные окружения -----
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -99,11 +99,11 @@ async def send_daily_reminder():
         print(f"Ошибка в send_daily_reminder: {e}")
 
 # ----- Webhook сервер -----
-async def handle(request):
+async def handle(request: web.Request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.feed_update(update)   # корректно для aiogram 3.x
-    return web.Response()
+    await dp.process_update(update)  # корректно для aiogram 3.x
+    return web.Response(text="ok")
 
 async def on_startup(app):
     await bot.delete_webhook(drop_pending_updates=True)
