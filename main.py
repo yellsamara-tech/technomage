@@ -39,7 +39,10 @@ async def start_handler(message: types.Message):
             today = date.today()
             if user.get("status") and user.get("last_update") != today:
                 await update_status(user["id"], user["status"])
-            await message.answer(f"Ты уже зарегистрирован как: {user['full_name']}\nВыбери свой статус:", reply_markup=status_kb)
+            await message.answer(
+                f"Ты уже зарегистрирован как: {user['full_name']}\nВыбери свой статус:", 
+                reply_markup=status_kb
+            )
         else:
             await message.answer("Привет! Введи своё ФИО для регистрации.")
     except Exception as e:
@@ -91,17 +94,18 @@ async def send_daily_reminder():
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.feed_update(update)  # исправлено для aiogram v3
+    await dp.feed_update(update)
     return web.Response()
 
 async def on_startup(app):
-    # Удаляем старый webhook, чтобы не было конфликта
+    # Удаляем старый webhook
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
     print(f"Webhook установлен: {WEBHOOK_URL}")
 
 async def on_cleanup(app):
     await bot.delete_webhook()
+    await bot.session.close()  # <-- закрываем aiohttp session
 
 # ----- Запуск webhook -----
 async def start_webhook():
