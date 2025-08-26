@@ -8,19 +8,19 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pytz import timezone
 from db import init_db, add_user, get_user, update_status, get_all_users
 
+# ----- Переменные окружения -----
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN не найден в переменных окружения")
+    raise ValueError("❌ BOT_TOKEN не найден")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Webhook
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{os.getenv('RENDER_EXTERNAL_URL')}{WEBHOOK_PATH}"
 PORT = int(os.getenv("PORT", 5000))
 
-# Горячие кнопки
+# ----- Горячие кнопки -----
 status_kb = types.ReplyKeyboardMarkup(
     keyboard=[
         [types.KeyboardButton(text="✅ Работаю"), types.KeyboardButton(text="🤒 Болею")],
@@ -37,7 +37,6 @@ async def start_handler(message: types.Message):
         user = await get_user(message.from_user.id)
         if user:
             today = date.today()
-            # Если статус не обновлён сегодня, дублируем
             if user.get("status") and user.get("last_update") != today:
                 await update_status(user["id"], user["status"])
             await message.answer(f"Ты уже зарегистрирован как: {user['full_name']}\nВыбери свой статус:", reply_markup=status_kb)
@@ -52,29 +51,24 @@ async def process_message(message: types.Message):
         user = await get_user(message.from_user.id)
         text = message.text.strip()
 
-        # Регистрация нового пользователя
         if not user:
             await add_user(message.from_user.id, text)
             await message.answer(f"✅ Зарегистрировал тебя как: {text}\nТеперь выбери свой статус:", reply_markup=status_kb)
             return
 
-        # Проверка последнего статуса
         if text == "ℹ️ Проверить последний статус":
             last_status = user.get("status") or "ещё не выбран"
             await message.answer(f"📌 Твой последний статус: {last_status}")
             return
 
-        # Изменить статус
         if text == "✏️ Изменить статус":
             await message.answer("Выбери новый статус или напиши свой текстом 👇", reply_markup=status_kb)
             return
 
-        # Свой вариант
         if text == "✍️ Свой вариант":
             await message.answer("Напиши свой статус сообщением 👇")
             return
 
-        # Обновление статуса
         await update_status(user["id"], text)
         await message.answer(f"📌 Статус обновлён: {text}")
 
@@ -110,7 +104,7 @@ async def on_cleanup(app):
 async def main():
     await init_db()
 
-    # Планировщик для напоминания
+    # Планировщик APScheduler
     scheduler = AsyncIOScheduler(timezone=timezone("Asia/Samarkand"))
     scheduler.add_job(send_daily_reminder, 'cron', hour=18, minute=0)
     scheduler.start()
@@ -122,5 +116,8 @@ async def main():
 
     web.run_app(app, host="0.0.0.0", port=PORT)
 
+# ----- Запуск без конфликта с event loop -----
 if __name__ == "__main__":
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
