@@ -6,11 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pytz import timezone
-from db import (
-    init_db, add_user, get_user, update_status, get_all_users,
-    get_status_history, find_user_by_name, get_admins
-)
-from aiogram.dispatcher.middlewares import BaseMiddleware
+from db import init_db, add_user, get_user, update_status, get_all_users, get_status_history, find_user_by_name, get_admins
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -19,7 +15,6 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Горячие кнопки статусов
 status_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✅ Работаю"), KeyboardButton(text="🤒 Болею")],
@@ -29,18 +24,6 @@ status_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# Middleware для отлова ошибок
-class MyErrorMiddleware(BaseMiddleware):
-    async def __call__(self, handler, event, data):
-        try:
-            return await handler(event, data)
-        except Exception as e:
-            print(f"Ошибка в хэндлере: {e}")
-            return None
-
-dp.message.middleware(MyErrorMiddleware())
-
-# Команда /start
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     try:
@@ -59,7 +42,6 @@ async def start_handler(message: types.Message):
     except Exception as e:
         print(f"Ошибка в /start: {e}")
 
-# Обработка сообщений
 @dp.message()
 async def process_message(message: types.Message):
     try:
@@ -67,14 +49,10 @@ async def process_message(message: types.Message):
         if not user:
             full_name = message.text.strip()
             await add_user(message.from_user.id, full_name)
-            await message.answer(
-                f"✅ Зарегистрировал тебя как: {full_name}\n\nТеперь выбери свой статус:",
-                reply_markup=status_kb
-            )
+            await message.answer(f"✅ Зарегистрировал тебя как: {full_name}\n\nТеперь выбери свой статус:", reply_markup=status_kb)
             return
 
         text = message.text.strip()
-
         if text == "ℹ️ Проверить последний статус":
             last_status = user['status'] if user['status'] else "ещё не выбран"
             await message.answer(f"📌 Твой последний статус: {last_status}")
@@ -94,7 +72,6 @@ async def process_message(message: types.Message):
     except Exception as e:
         print(f"Ошибка в process_message: {e}")
 
-# Админ: список всех пользователей
 @dp.message(Command("list"))
 async def list_users(message: types.Message):
     try:
@@ -108,7 +85,6 @@ async def list_users(message: types.Message):
     except Exception as e:
         print(f"Ошибка в /list: {e}")
 
-# Админ: поиск по ФИО
 @dp.message(Command("find"))
 async def find_user(message: types.Message):
     try:
@@ -130,7 +106,6 @@ async def find_user(message: types.Message):
     except Exception as e:
         print(f"Ошибка в /find: {e}")
 
-# История статусов
 @dp.message(Command("history"))
 async def status_history(message: types.Message):
     try:
@@ -147,31 +122,22 @@ async def status_history(message: types.Message):
     except Exception as e:
         print(f"Ошибка в /history: {e}")
 
-# Напоминание всем пользователям в 18:00 по Самарскому времени
 async def send_daily_reminder():
     try:
         users = await get_all_users()
         for user in users:
             try:
-                await bot.send_message(
-                    user['id'],
-                    "⏰ Пожалуйста, обнови свой статус на сегодня!",
-                    reply_markup=status_kb
-                )
+                await bot.send_message(user['id'], "⏰ Пожалуйста, обнови свой статус на сегодня!", reply_markup=status_kb)
             except Exception as e:
                 print(f"Не удалось отправить сообщение {user['id']}: {e}")
     except Exception as e:
         print(f"Ошибка в send_daily_reminder: {e}")
 
-# Главная функция
 async def main():
     await init_db()
-
-    # Планировщик
     scheduler = AsyncIOScheduler(timezone=timezone("Asia/Samarkand"))
     scheduler.add_job(send_daily_reminder, 'cron', hour=18, minute=0)
     scheduler.start()
-
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
