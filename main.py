@@ -102,7 +102,7 @@ async def send_daily_reminder():
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.feed_update(update)
+    await dp.process_update(update)
     return web.Response()
 
 async def on_startup(app):
