@@ -100,6 +100,19 @@ async def on_startup(app):
 async def on_cleanup(app):
     await bot.delete_webhook()
 
+# ----- Запуск aiohttp без web.run_app -----
+async def start_webhook():
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, handle)
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+    print(f"Webhook сервер запущен на порту {PORT}")
+
 # ----- Главная функция -----
 async def main():
     await init_db()
@@ -109,15 +122,12 @@ async def main():
     scheduler.add_job(send_daily_reminder, 'cron', hour=18, minute=0)
     scheduler.start()
 
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle)
-    app.on_startup.append(on_startup)
-    app.on_cleanup.append(on_cleanup)
+    # Запуск webhook + бот
+    await asyncio.gather(
+        start_webhook(),
+        dp.start_polling(bot)  # polling на время разработки; можно оставить или заменить webhook полностью
+    )
 
-    web.run_app(app, host="0.0.0.0", port=PORT)
-
-# ----- Запуск без конфликта с event loop -----
+# ----- Запуск -----
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
+    asyncio.run(main())
