@@ -2,3 +2,5 @@ aiogram==3.*
 asyncpg
 flask
 requests
+apscheduler
+pytz
