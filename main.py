@@ -102,7 +102,7 @@ async def send_daily_reminder():
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.update_router.feed_update(update)  # корректно для aiogram 3.x
+    await dp.feed_update(update)   # корректно для aiogram 3.x
     return web.Response()
 
 async def on_startup(app):
