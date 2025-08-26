@@ -10,7 +10,7 @@ from db import (
     init_db, add_user, get_user, update_status, get_all_users,
     get_status_history, find_user_by_name, get_admins
 )
-from aiogram.dispatcher.middlewares.error import BaseErrorMiddleware
+from aiogram.dispatcher.middlewares import BaseMiddleware
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -29,8 +29,8 @@ status_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# Глобальный middleware для отлова ошибок
-class MyErrorMiddleware(BaseErrorMiddleware):
+# Middleware для отлова ошибок
+class MyErrorMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         try:
             return await handler(event, data)
@@ -46,7 +46,6 @@ async def start_handler(message: types.Message):
     try:
         user = await get_user(message.from_user.id)
         if user:
-            # Дублируем статус на новый день
             today = date.today()
             history = await get_status_history(user['id'])
             if history and history[-1]['status_date'] != today:
@@ -76,23 +75,19 @@ async def process_message(message: types.Message):
 
         text = message.text.strip()
 
-        # Проверка последнего статуса
         if text == "ℹ️ Проверить последний статус":
             last_status = user['status'] if user['status'] else "ещё не выбран"
             await message.answer(f"📌 Твой последний статус: {last_status}")
             return
 
-        # Изменить статус
         if text == "✏️ Изменить статус":
             await message.answer("Выбери новый статус или напиши свой текстом 👇", reply_markup=status_kb)
             return
 
-        # Свой вариант
         if text == "✍️ Свой вариант":
             await message.answer("Напиши свой статус сообщением 👇")
             return
 
-        # Обновление статуса
         await update_status(user['id'], text)
         await message.answer(f"📌 Статус обновлён: {text}")
 
