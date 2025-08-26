@@ -1,18 +1,13 @@
 import os
 import asyncio
 from datetime import date
-from pytz import timezone
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-from db import init_db, add_user, get_user, update_status, get_all_users, get_status_history, get_admins
-
-import nest_asyncio
-nest_asyncio.apply()  # Важно для Render
+from pytz import timezone
+from db import init_db, add_user, get_user, update_status, get_all_users, get_admins, get_status_history
 
 # ----- Переменные окружения -----
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -50,7 +45,7 @@ async def start_handler(message: types.Message):
         if user.get("status") and user.get("last_update") != today:
             await update_status(user["id"], user["status"])
         await message.answer(
-            f"Ты уже зарегистрирован как: {user['full_name']}\nВыбери свой статус:", 
+            f"Ты уже зарегистрирован как: {user['full_name']}\nВыбери свой статус:",
             reply_markup=status_kb
         )
     else:
@@ -61,48 +56,42 @@ async def process_message(message: types.Message):
     user = await get_user(message.from_user.id)
     text = message.text.strip()
 
-    # Регистрация нового пользователя
     if not user:
         await add_user(message.from_user.id, text)
         await message.answer(f"✅ Зарегистрировал тебя как: {text}\nТеперь выбери свой статус:", reply_markup=status_kb)
         return
 
-    # Проверка последнего статуса
     if text == "ℹ️ Проверить последний статус":
         last_status = user.get("status") or "ещё не выбран"
         await message.answer(f"📌 Твой последний статус: {last_status}")
         return
 
-    # Изменить статус
     if text == "✏️ Изменить статус":
         await message.answer("Выбери новый статус или напиши свой текстом 👇", reply_markup=status_kb)
         return
 
-    # Свой вариант статуса
     if text == "✍️ Свой вариант":
         await message.answer("Напиши свой статус сообщением 👇")
         return
 
-    # Обновление статуса
     await update_status(user["id"], text)
     await message.answer(f"📌 Статус обновлён: {text}")
 
 # ----- Админские команды -----
 @dp.message(Command("history"))
-async def history_handler(message: types.Message):
+async def admin_history(message: types.Message):
     admins = await get_admins()
-    admin_ids = [a["id"] for a in admins]
-    if message.from_user.id not in admin_ids:
-        await message.answer("❌ У тебя нет прав администратора")
+    if message.from_user.id not in [a["id"] for a in admins]:
+        await message.answer("❌ У вас нет прав")
         return
 
     users = await get_all_users()
     text = ""
     for u in users:
         history = await get_status_history(u["id"])
-        h_text = ", ".join([f"{row['status_date']}: {row['status']}" for row in history])
-        text += f"{u['full_name']}: {h_text}\n"
-    await message.answer(f"📜 История статусов:\n{text}")
+        hist_text = ", ".join([f"{h['status_date']}: {h['status']}" for h in history])
+        text += f"{u['full_name']}: {hist_text}\n"
+    await message.answer(text or "История пуста")
 
 # ----- Ежедневное напоминание -----
 async def send_daily_reminder():
@@ -117,7 +106,7 @@ async def send_daily_reminder():
 async def handle(request):
     data = await request.json()
     update = types.Update(**data)
-    await dp.update_queue.put(update)  # кладём апдейт в очередь
+    await dp.update.update(update)  # <- используем метод Aiogram 3.x
     return web.Response()
 
 async def on_startup(app):
@@ -129,7 +118,6 @@ async def on_cleanup(app):
     await bot.delete_webhook()
     await bot.session.close()
 
-# ----- Запуск webhook -----
 async def start_webhook():
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, handle)
@@ -145,25 +133,13 @@ async def start_webhook():
 # ----- Главная функция -----
 async def main():
     await init_db()
-
-    # Планировщик APScheduler
     scheduler = AsyncIOScheduler(timezone=timezone("Asia/Samarkand"))
     scheduler.add_job(send_daily_reminder, 'cron', hour=18, minute=0)
     scheduler.start()
-
-    # Запуск webhook
     await start_webhook()
-
-    # Запуск диспетчера для обработки апдейтов
-    asyncio.create_task(dp.start_dispatching(bot))
-
-    # Держим цикл живым
     while True:
         await asyncio.sleep(3600)
 
 # ----- Запуск -----
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    print("Бот запущен. Webhook сервер работает...")
-    loop.run_forever()
+    asyncio.run(main())
