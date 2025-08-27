@@ -1,92 +1,111 @@
-import os
-import asyncpg
+import aiosqlite
 from datetime import date
 
-DB_URL = os.getenv("DATABASE_URL")
+DB_FILE = "bot.db"
 
 # ----- Инициализация базы -----
 async def init_db():
-    conn = await asyncpg.connect(DB_URL)
-    # Таблица пользователей
-    await conn.execute("""
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id BIGINT PRIMARY KEY,
-            full_name TEXT NOT NULL,
-            is_admin BOOLEAN DEFAULT FALSE
-        )
-    """)
-    # Таблица истории статусов
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS status_history (
-            user_id BIGINT REFERENCES users(id),
+            id INTEGER PRIMARY KEY,
+            full_name TEXT,
+            is_admin INTEGER DEFAULT 0,
             status TEXT,
-            status_date DATE,
-            PRIMARY KEY(user_id, status_date)
+            tabel TEXT
         )
-    """)
-    await conn.close()
+        """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            status TEXT,
+            status_date DATE
+        )
+        """)
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """)
+        await db.commit()
 
-# ----- Добавление пользователя -----
-async def add_user(user_id: int, full_name: str, is_admin: bool = False):
-    conn = await asyncpg.connect(DB_URL)
-    await conn.execute("""
-        INSERT INTO users (id, full_name, is_admin) 
-        VALUES ($1, $2, $3)
-        ON CONFLICT (id) DO NOTHING
-    """, user_id, full_name, is_admin)
-    await conn.close()
+# ----- Пользователи -----
+async def add_user(user_id, full_name, is_admin=False):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("""
+            INSERT OR IGNORE INTO users (id, full_name, is_admin)
+            VALUES (?, ?, ?)
+        """, (user_id, full_name, int(is_admin)))
+        await db.commit()
 
-# ----- Получение пользователя -----
-async def get_user(user_id: int):
-    conn = await asyncpg.connect(DB_URL)
-    row = await conn.fetchrow("SELECT * FROM users WHERE id=$1", user_id)
-    await conn.close()
-    return row
+async def get_user(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT * FROM users WHERE id=?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return {"id": row[0], "full_name": row[1], "is_admin": bool(row[2]), "status": row[3], "tabel": row[4]}
+            return None
 
-# ----- Обновление статуса -----
-async def update_status(user_id: int, status: str):
-    today = date.today()
-    conn = await asyncpg.connect(DB_URL)
-    # Добавляем или обновляем запись в истории
-    await conn.execute("""
-        INSERT INTO status_history(user_id, status, status_date)
-        VALUES($1, $2, $3)
-        ON CONFLICT(user_id, status_date) DO UPDATE SET status=$2
-    """, user_id, status, today)
-    await conn.close()
-
-# ----- Получение всех пользователей -----
 async def get_all_users():
-    conn = await asyncpg.connect(DB_URL)
-    rows = await conn.fetch("SELECT * FROM users ORDER BY full_name")
-    await conn.close()
-    return rows
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT * FROM users") as cursor:
+            rows = await cursor.fetchall()
+            return [{"id": r[0], "full_name": r[1], "is_admin": bool(r[2]), "status": r[3], "tabel": r[4]} for r in rows]
 
-# ----- Получение всех админов -----
 async def get_admins():
-    conn = await asyncpg.connect(DB_URL)
-    rows = await conn.fetch("SELECT * FROM users WHERE is_admin=TRUE")
-    await conn.close()
-    return rows
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT * FROM users WHERE is_admin=1") as cursor:
+            rows = await cursor.fetchall()
+            return [{"id": r[0], "full_name": r[1], "is_admin": True, "status": r[3], "tabel": r[4]} for r in rows]
 
-# ----- Назначение админа -----
-async def make_admin(user_id: int):
-    conn = await asyncpg.connect(DB_URL)
-    await conn.execute("UPDATE users SET is_admin=TRUE WHERE id=$1", user_id)
-    await conn.close()
+async def make_admin(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("UPDATE users SET is_admin=1 WHERE id=?", (user_id,))
+        await db.commit()
 
-# ----- Снятие админа -----
-async def revoke_admin(user_id: int):
-    conn = await asyncpg.connect(DB_URL)
-    await conn.execute("UPDATE users SET is_admin=FALSE WHERE id=$1", user_id)
-    await conn.close()
+async def revoke_admin(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("UPDATE users SET is_admin=0 WHERE id=?", (user_id,))
+        await db.commit()
 
-# ----- Получение истории статусов пользователя -----
-async def get_status_history(user_id: int):
-    conn = await asyncpg.connect(DB_URL)
-    rows = await conn.fetch(
-        "SELECT status, status_date FROM status_history WHERE user_id=$1 ORDER BY status_date",
-        user_id
-    )
-    await conn.close()
-    return rows
+async def delete_user(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("DELETE FROM users WHERE id=?", (user_id,))
+        await db.execute("DELETE FROM status_history WHERE user_id=?", (user_id,))
+        await db.commit()
+
+# ----- Статусы -----
+async def update_status(user_id, status):
+    today = date.today()
+    async with aiosqlite.connect(DB_FILE) as db:
+        await db.execute("UPDATE users SET status=? WHERE id=?", (status, user_id))
+        # сохраняем историю
+        await db.execute("""
+            INSERT INTO status_history (user_id, status, status_date)
+            VALUES (?, ?, ?)
+        """, (user_id, status, today))
+        await db.commit()
+
+async def get_status_history(user_id):
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT status, status_date FROM status_history WHERE user_id=? ORDER BY status_date DESC", (user_id,)) as cursor:
+            rows = await cursor.fetchall()
+            return [{"status": r[0], "status_date": r[1]} for r in rows]
+
+# ----- Настройки -----
+async def set_reminder_time(hour, minute):
+    async with aiosqlite.connect(DB_FILE) as db:
+        value = f"{hour:02d}:{minute:02d}"
+        await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('reminder_time', ?)", (value,))
+        await db.commit()
+
+async def get_reminder_time():
+    async with aiosqlite.connect(DB_FILE) as db:
+        async with db.execute("SELECT value FROM settings WHERE key='reminder_time'") as cursor:
+            row = await cursor.fetchone()
+            if row:
+                hour, minute = map(int, row[0].split(":"))
+                return {"hour": hour, "minute": minute}
+            return None
