@@ -29,12 +29,22 @@ WEBHOOK_URL = f"{RENDER_URL}{WEBHOOK_PATH}"
 # ----- Жестко прописанные админы -----
 ADMINS = [452908347]
 
-# ----- Горячие кнопки -----
+# ----- Горячие кнопки пользователей -----
 status_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="✅ Работаю"), KeyboardButton(text="🤒 Болею")],
         [KeyboardButton(text="🏖 Отпуск"), KeyboardButton(text="✍️ Свой вариант")],
         [KeyboardButton(text="ℹ️ Проверить последний статус"), KeyboardButton(text="✏️ Изменить статус")]
+    ],
+    resize_keyboard=True
+)
+
+# ----- Клавиатура для админа -----
+admin_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🗂 История статусов")],
+        [KeyboardButton(text="👥 Список пользователей"), KeyboardButton(text="🔑 Список админов")],
+        [KeyboardButton(text="📢 Рассылка")]
     ],
     resize_keyboard=True
 )
@@ -48,29 +58,53 @@ async def start_handler(message: types.Message):
     text = "👋 Привет! Добро пожаловать в бот статусов.\n"
 
     if message.from_user.id in ADMINS:
-        text += "✅ У тебя есть права администратора.\n"
+        text += "✅ У тебя есть права администратора."
+        kb = admin_kb
     else:
-        text += "📌 Ты обычный пользователь.\n"
+        text += "📌 Ты обычный пользователь."
+        kb = status_kb
 
     if user:
         if user.get("status") and user.get("last_update") != today:
             await update_status(user["id"], user["status"])
-        text += f"Ты уже зарегистрирован как: {user['full_name']}\nВыбери свой статус:"
-        await message.answer(text, reply_markup=status_kb)
+        text += f"\nТы уже зарегистрирован как: {user['full_name']}"
+        await message.answer(text, reply_markup=kb)
     else:
-        text += "Введи своё ФИО для регистрации."
-        await message.answer(text)
+        text += "\nВведи своё ФИО для регистрации."
+        await message.answer(text, reply_markup=kb)
 
 @dp.message()
 async def process_message(message: types.Message):
     user = await get_user(message.from_user.id)
     text = message.text.strip()
 
+    # Если пользователь не зарегистрирован
     if not user:
         await add_user(message.from_user.id, text)
         await message.answer(f"✅ Зарегистрировал тебя как: {text}\nТеперь выбери свой статус:", reply_markup=status_kb)
         return
 
+    # --- Админские кнопки ---
+    if message.from_user.id in ADMINS:
+        if text == "📊 Статистика":
+            await admin_stats(message)
+            return
+        if text == "🗂 История статусов":
+            await admin_history(message)
+            return
+        if text == "👥 Список пользователей":
+            await admin_users(message)
+            return
+        if text == "🔑 Список админов":
+            await admin_list(message)
+            return
+        if text == "📢 Рассылка":
+            await message.answer("✍️ Напиши текст для рассылки всем пользователям.")
+            # Ждем следующее сообщение с текстом рассылки
+            dp.register_message_handler(handle_broadcast_text, state=None)
+            return
+
+    # --- Пользовательские команды ---
     if text == "ℹ️ Проверить последний статус":
         last_status = user.get("status") or "ещё не выбран"
         await message.answer(f"📌 Твой последний статус: {last_status}")
@@ -84,16 +118,31 @@ async def process_message(message: types.Message):
         await message.answer("Напиши свой статус сообщением 👇")
         return
 
+    # Обновление статуса
     await update_status(user["id"], text)
     await message.answer(f"📌 Статус обновлён: {text}")
 
-# ----- Админские команды -----
-@dp.message(Command("history"))
-async def admin_history(message: types.Message):
+# ----- Обработчик рассылки (админ) -----
+async def handle_broadcast_text(message: types.Message):
     if message.from_user.id not in ADMINS:
-        await message.answer("❌ У вас нет прав")
         return
 
+    text_to_send = message.text.strip()
+    users = await get_all_users()
+    sent, failed = 0, 0
+    for u in users:
+        try:
+            await bot.send_message(u["id"], f"📢 Админ сообщает:\n{text_to_send}")
+            sent += 1
+        except:
+            failed += 1
+
+    await message.answer(f"✅ Сообщение отправлено {sent} пользователям, ошибок: {failed}")
+    # Убираем обработчик после рассылки
+    dp.message_handlers.unregister(handle_broadcast_text)
+
+# ----- Админские функции -----
+async def admin_history(message: types.Message):
     users = await get_all_users()
     text = ""
     for u in users:
@@ -102,57 +151,20 @@ async def admin_history(message: types.Message):
         text += f"{u['full_name']}: {hist_text}\n"
     await message.answer(text or "История пуста")
 
-@dp.message(Command("users"))
 async def admin_users(message: types.Message):
-    if message.from_user.id not in ADMINS:
-        await message.answer("❌ У вас нет прав")
-        return
-
     users = await get_all_users()
     text = "👥 Зарегистрированные пользователи:\n"
     for u in users:
         text += f"- {u['full_name']} (ID: {u['id']})\n"
     await message.answer(text)
 
-@dp.message(Command("admins"))
 async def admin_list(message: types.Message):
-    if message.from_user.id not in ADMINS:
-        await message.answer("❌ У вас нет прав")
-        return
-
     text = "🔑 Администраторы:\n"
     for admin_id in ADMINS:
         text += f"- {admin_id}\n"
     await message.answer(text)
 
-@dp.message(Command("broadcast"))
-async def admin_broadcast(message: types.Message):
-    if message.from_user.id not in ADMINS:
-        await message.answer("❌ У вас нет прав")
-        return
-
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        await message.answer("✍️ Использование: /broadcast текст_сообщения")
-        return
-
-    users = await get_all_users()
-    sent, failed = 0, 0
-    for user in users:
-        try:
-            await bot.send_message(user["id"], f"📢 Админ сообщает:\n{args[1]}")
-            sent += 1
-        except:
-            failed += 1
-
-    await message.answer(f"✅ Сообщение отправлено {sent} пользователям, ошибок: {failed}")
-
-@dp.message(Command("stats"))
 async def admin_stats(message: types.Message):
-    if message.from_user.id not in ADMINS:
-        await message.answer("❌ У вас нет прав")
-        return
-
     users = await get_all_users()
     stats = {}
     for u in users:
