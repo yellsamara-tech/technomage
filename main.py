@@ -32,17 +32,17 @@ class Broadcast(StatesGroup):
 # --- Клавиатуры ---
 user_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton("🟢 Я на работе (СП)"), KeyboardButton("🔴 Я болею (Б)")],
-        [KeyboardButton("🕒 Я в дороге (СП)"), KeyboardButton("📌 У меня отгул (Вр)")]
+        [KeyboardButton(text="🟢 Я на работе (СП)"), KeyboardButton(text="🔴 Я болею (Б)")],
+        [KeyboardButton(text="🕒 Я в дороге (СП)"), KeyboardButton(text="📌 У меня отгул (Вр)")]
     ],
     resize_keyboard=True
 )
 
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton("📊 Посмотреть всех пользователей")],
-        [KeyboardButton("👑 Назначить админа"), KeyboardButton("❌ Убрать админа")],
-        [KeyboardButton("✉️ Сделать рассылку")]
+        [KeyboardButton(text="📊 Посмотреть всех пользователей")],
+        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа")],
+        [KeyboardButton(text="✉️ Сделать рассылку")]
     ],
     resize_keyboard=True
 )
