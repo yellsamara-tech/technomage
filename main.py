@@ -1,23 +1,25 @@
 import os
 import asyncio
-from datetime import date
+from datetime import date, datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiohttp import web
-from db import init_db, add_user, get_user, update_status, get_all_users, get_admins, make_admin, revoke_admin
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from pytz import timezone
+from db import (
+    init_db, add_user, get_user, update_status, get_all_users, get_admins,
+    make_admin, revoke_admin, delete_user, get_status_history, set_reminder_time, get_reminder_time
+)
 
 # ----- Переменные окружения -----
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден")
 
-CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))  # твой ID
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
-PORT = int(os.getenv("PORT", 5000))
+CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))  # твой ID по умолчанию
 
 # ----- Инициализация бота и диспетчера -----
 storage = MemoryStorage()
@@ -32,37 +34,39 @@ class Registration(StatesGroup):
 class Broadcast(StatesGroup):
     waiting_for_text = State()
 
+class ReminderTime(StatesGroup):
+    waiting_for_time = State()
+
 # ----- Клавиатуры -----
 user_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🟢 Я на работе (СП)"), KeyboardButton(text="🔴 Я болею (Б)")],
-        [KeyboardButton(text="🕒 Я в дороге (СП)"), KeyboardButton(text="📌 У меня отгул (Вр)")]
+        [KeyboardButton("🟢 Я на работе (СП)"), KeyboardButton("🔴 Я болею (Б)")],
+        [KeyboardButton("🕒 Я в дороге (СП)"), KeyboardButton("📌 У меня отгул (Вр)")],
+        [KeyboardButton("ℹ️ Проверить последний статус")]
     ],
     resize_keyboard=True
 )
 
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 Посмотреть всех пользователей")],
-        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа")],
-        [KeyboardButton(text="✉️ Сделать рассылку")]
+        [KeyboardButton("📊 Посмотреть всех пользователей")],
+        [KeyboardButton("📈 Статистика по статусам"), KeyboardButton("📜 История пользователя")],
+        [KeyboardButton("👑 Назначить админа"), KeyboardButton("❌ Убрать админа")],
+        [KeyboardButton("🗑️ Удалить пользователя"), KeyboardButton("✉️ Сделать рассылку")],
+        [KeyboardButton("⏰ Изменить время напоминания")]
     ],
     resize_keyboard=True
 )
-
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"{RENDER_URL}{WEBHOOK_PATH}"
 
 # ----- /start -----
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
     if not user:
-        # Новый пользователь
         await message.answer(
             "👋 Привет! Я твой рабочий помощник.\n"
             "Ты сможешь отмечать свой статус: работа, болезнь, дорога, отгул.\n"
-            "Админы смогут видеть всех пользователей и делать рассылки.\n\n"
+            "Админы смогут видеть всех пользователей, делать рассылки, статистику и управлять напоминаниями.\n\n"
             "👉 Давай начнем регистрацию.\nВведи своё ФИО:"
         )
         await state.set_state(Registration.waiting_for_fullname)
@@ -94,7 +98,13 @@ async def set_user_status(message: types.Message):
     await update_status(message.from_user.id, message.text)
     await message.answer(f"✅ Твой статус обновлён: {message.text}")
 
-# ----- Админские команды -----
+@dp.message(lambda m: m.text == "ℹ️ Проверить последний статус")
+async def check_status(message: types.Message):
+    user = await get_user(message.from_user.id)
+    last_status = user.get("status") or "ещё не выбран"
+    await message.answer(f"📌 Твой последний статус: {last_status}")
+
+# ----- Админ: Просмотр пользователей -----
 @dp.message(lambda m: m.text == "📊 Посмотреть всех пользователей")
 async def admin_show_users(message: types.Message):
     user = await get_user(message.from_user.id)
@@ -106,6 +116,25 @@ async def admin_show_users(message: types.Message):
         text += f"{u['id']} | {u['full_name']} | {'🛡️ Админ' if u['is_admin'] else '👤 Пользователь'}\n"
     await message.answer(text)
 
+# ----- Админ: Статистика по статусам -----
+@dp.message(lambda m: m.text == "📈 Статистика по статусам")
+async def admin_status_stats(message: types.Message):
+    users = await get_all_users()
+    today = date.today()
+    text = f"📊 Статистика статусов за {today}:\n"
+    for u in users:
+        history = await get_status_history(u["id"])
+        today_status = next((h["status"] for h in history if h["status_date"] == today), "не выбран")
+        text += f"{u['full_name']}: {today_status}\n"
+    await message.answer(text)
+
+# ----- Админ: История пользователя -----
+@dp.message(lambda m: m.text == "📜 История пользователя")
+async def admin_user_history(message: types.Message, state: FSMContext):
+    await message.answer("Введите ID пользователя для просмотра истории:")
+    await state.set_state(Registration.waiting_for_fullname)  # переиспользуем для ввода ID
+
+# ----- Админ: Назначение и снятие админов -----
 @dp.message(lambda m: m.text == "👑 Назначить админа")
 async def admin_assign(message: types.Message):
     if message.from_user.id != CREATOR_ID:
@@ -145,6 +174,39 @@ async def callback_removeadmin(call: types.CallbackQuery):
     await call.message.answer(f"✅ Пользователь {user_id} лишён прав админа.")
     await call.answer()
 
+# ----- Админ: Удаление пользователей -----
+@dp.message(lambda m: m.text == "🗑️ Удалить пользователя")
+async def admin_delete_user(message: types.Message):
+    deleter = await get_user(message.from_user.id)
+    if not deleter:
+        return
+    users = await get_all_users()
+    kb = InlineKeyboardMarkup(row_width=1)
+    for u in users:
+        # создатель видит всех, админ только обычных пользователей
+        if message.from_user.id == CREATOR_ID or (deleter.get("is_admin") and not u["is_admin"]):
+            kb.add(InlineKeyboardButton(u["full_name"], callback_data=f"delete_{u['id']}"))
+    if kb.inline_keyboard:
+        await message.answer("Выбери пользователя для удаления:", reply_markup=kb)
+    else:
+        await message.answer("Нет пользователей для удаления.")
+
+@dp.callback_query(lambda c: c.data.startswith("delete_"))
+async def callback_delete_user(call: types.CallbackQuery):
+    deleter = await get_user(call.from_user.id)
+    user_id = int(call.data.split("_")[1])
+    target = await get_user(user_id)
+    if not target:
+        await call.answer("Пользователь не найден.", show_alert=True)
+        return
+    if call.from_user.id != CREATOR_ID and target.get("is_admin"):
+        await call.answer("⛔ Нельзя удалить админа.", show_alert=True)
+        return
+    await delete_user(user_id)
+    await call.message.answer(f"✅ Пользователь {target['full_name']} удалён.")
+    await call.answer()
+
+# ----- Админ: Рассылка -----
 @dp.message(lambda m: m.text == "✉️ Сделать рассылку")
 async def admin_broadcast(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
@@ -168,41 +230,42 @@ async def send_broadcast(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Рассылка завершена.\nУспешно: {success}, Ошибки: {fail}")
     await state.clear()
 
-# ----- Webhook сервер -----
-async def handle(request):
-    data = await request.json()
-    update = types.Update(**data)
-    await dp.feed_update(bot, update)
-    return web.Response()
+# ----- Админ: Настройка времени напоминаний -----
+@dp.message(lambda m: m.text == "⏰ Изменить время напоминания")
+async def admin_set_reminder(message: types.Message, state: FSMContext):
+    await message.answer("Введите новое время напоминания в формате ЧЧ:ММ (например 09:00):")
+    await state.set_state(ReminderTime.waiting_for_time)
 
-async def on_startup(app):
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(WEBHOOK_URL)
-    print(f"Webhook установлен: {WEBHOOK_URL}")
+@dp.message(ReminderTime.waiting_for_time)
+async def set_reminder_time_handler(message: types.Message, state: FSMContext):
+    try:
+        t = datetime.strptime(message.text, "%H:%M").time()
+        await set_reminder_time(t.hour, t.minute)
+        await message.answer(f"✅ Время напоминания установлено на {t.strftime('%H:%M')}")
+    except:
+        await message.answer("⛔ Неверный формат времени. Попробуйте снова (ЧЧ:ММ)")
+    await state.clear()
 
-async def on_cleanup(app):
-    await bot.delete_webhook()
-    await bot.session.close()
+# ----- Ежедневное напоминание -----
+scheduler = AsyncIOScheduler(timezone=timezone("Europe/Samara"))
 
-async def start_webhook():
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle)
-    app.on_startup.append(on_startup)
-    app.on_cleanup.append(on_cleanup)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
-    await site.start()
-    print(f"Webhook сервер запущен на порту {PORT}")
+async def send_daily_reminder():
+    users = await get_all_users()
+    for u in users:
+        try:
+            await bot.send_message(u["id"], "⏰ Пожалуйста, обновите свой статус на сегодня!")
+        except:
+            pass
 
-# ----- Главная функция -----
 async def main():
     await init_db()
+    # Устанавливаем расписание напоминаний
+    reminder_time = await get_reminder_time()
+    if reminder_time:
+        scheduler.add_job(send_daily_reminder, "cron", hour=reminder_time["hour"], minute=reminder_time["minute"])
+    scheduler.start()
     print("Бот запущен!")
-    await start_webhook()
-    while True:
-        await asyncio.sleep(3600)
+    await dp.start_polling(bot)
 
-# ----- Запуск -----
 if __name__ == "__main__":
     asyncio.run(main())
