@@ -1,5 +1,5 @@
 import aiosqlite
-from datetime import datetime, date
+from datetime import date
 
 DB_FILE = "users.db"
 
@@ -58,7 +58,6 @@ async def delete_user(user_id: int):
 async def update_status(user_id: int, status: str):
     today = date.today().isoformat()
     async with aiosqlite.connect(DB_FILE) as db:
-        # Проверяем, есть ли уже статус за сегодня
         async with db.execute(
             "SELECT id FROM statuses WHERE user_id = ? AND status_date = ?",
             (user_id, today)
@@ -85,7 +84,6 @@ async def get_status_history(user_id: int, status_date: str = None):
             return [{"status": r[0], "status_date": r[1]} for r in rows]
 
 async def get_status_statistics(stat_date: str = None):
-    """Возвращает статистику по статусам всех пользователей за выбранную дату"""
     async with aiosqlite.connect(DB_FILE) as db:
         query = "SELECT status, COUNT(*) FROM statuses"
         params = []
@@ -113,3 +111,17 @@ async def revoke_admin(user_id: int):
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (user_id,))
         await db.commit()
+
+# ----- Пользователи без статуса за сегодня -----
+async def get_users_without_status_today():
+    today = date.today().isoformat()
+    async with aiosqlite.connect(DB_FILE) as db:
+        query = """
+        SELECT id, full_name FROM users
+        WHERE id NOT IN (
+            SELECT user_id FROM statuses WHERE status_date = ?
+        )
+        """
+        async with db.execute(query, (today,)) as cursor:
+            rows = await cursor.fetchall()
+            return [{"id": r[0], "full_name": r[1]} for r in rows]
