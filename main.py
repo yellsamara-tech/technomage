@@ -14,7 +14,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден")
 
-CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))  # твой ID
+CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))  # твой ID из Environment
 
 # --- Инициализация бота и dispatcher ---
 storage = MemoryStorage()
@@ -52,7 +52,6 @@ admin_kb = ReplyKeyboardMarkup(
 async def cmd_start(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
     if not user:
-        # новый пользователь
         await message.answer(
             "👋 Привет! Я твой рабочий помощник.\n"
             "Ты сможешь отмечать свой статус: работа, болезнь, дорога, отгул.\n"
