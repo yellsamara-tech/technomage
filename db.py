@@ -12,8 +12,6 @@ async def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id BIGINT PRIMARY KEY,
             full_name TEXT NOT NULL,
-            status TEXT,
-            last_update DATE,
             is_admin BOOLEAN DEFAULT FALSE
         )
     """)
@@ -33,7 +31,7 @@ async def add_user(user_id: int, full_name: str, is_admin: bool = False):
     conn = await asyncpg.connect(DB_URL)
     await conn.execute("""
         INSERT INTO users (id, full_name, is_admin) 
-        VALUES ($1, $2, $3) 
+        VALUES ($1, $2, $3)
         ON CONFLICT (id) DO NOTHING
     """, user_id, full_name, is_admin)
     await conn.close()
@@ -49,11 +47,7 @@ async def get_user(user_id: int):
 async def update_status(user_id: int, status: str):
     today = date.today()
     conn = await asyncpg.connect(DB_URL)
-    # Обновляем текущий статус и дату последнего обновления
-    await conn.execute("""
-        UPDATE users SET status=$1, last_update=$2 WHERE id=$3
-    """, status, today, user_id)
-    # Добавляем запись в историю (ON CONFLICT обновляем запись)
+    # Добавляем или обновляем запись в истории
     await conn.execute("""
         INSERT INTO status_history(user_id, status, status_date)
         VALUES($1, $2, $3)
@@ -68,7 +62,7 @@ async def get_all_users():
     await conn.close()
     return rows
 
-# ----- Получение админов -----
+# ----- Получение всех админов -----
 async def get_admins():
     conn = await asyncpg.connect(DB_URL)
     rows = await conn.fetch("SELECT * FROM users WHERE is_admin=TRUE")
@@ -81,13 +75,13 @@ async def make_admin(user_id: int):
     await conn.execute("UPDATE users SET is_admin=TRUE WHERE id=$1", user_id)
     await conn.close()
 
-# ----- Снятие прав админа -----
+# ----- Снятие админа -----
 async def revoke_admin(user_id: int):
     conn = await asyncpg.connect(DB_URL)
     await conn.execute("UPDATE users SET is_admin=FALSE WHERE id=$1", user_id)
     await conn.close()
 
-# ----- Получение истории пользователя -----
+# ----- Получение истории статусов пользователя -----
 async def get_status_history(user_id: int):
     conn = await asyncpg.connect(DB_URL)
     rows = await conn.fetch(
