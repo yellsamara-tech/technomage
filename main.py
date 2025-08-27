@@ -1,227 +1,184 @@
-
 import os
-import asyncio
-from datetime import date
+import logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiohttp import web
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from pytz import timezone
-from db import init_db, add_user, get_user, update_status, get_all_users, get_admins, get_status_history
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.utils import executor
 
-# ----- Переменные окружения -----
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN не найден")
+from db import init_db, add_user, get_user, update_status, get_all_users, get_admins
 
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
-if not RENDER_URL:
-    raise ValueError("❌ RENDER_EXTERNAL_URL не найден")
+logging.basicConfig(level=logging.INFO)
 
-PORT = int(os.getenv("PORT", 5000))
+API_TOKEN = os.getenv("BOT_TOKEN")
+bot = Bot(token=API_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+# --- Константы ---
+CREATOR_ID = 452908347
 
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"{RENDER_URL}{WEBHOOK_PATH}"
+# --- Состояния ---
+class Registration(StatesGroup):
+    waiting_for_fullname = State()
+    waiting_for_tabel = State()
 
-# ----- Жестко прописанные админы -----
-ADMINS = [452908347]
+class Broadcast(StatesGroup):
+    waiting_for_text = State()
 
-# ----- Горячие кнопки пользователей -----
-status_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="✅ Работаю"), KeyboardButton(text="🤒 Болею")],
-        [KeyboardButton(text="🏖 Отпуск"), KeyboardButton(text="✍️ Свой вариант")],
-        [KeyboardButton(text="ℹ️ Проверить последний статус"), KeyboardButton(text="✏️ Изменить статус")]
-    ],
-    resize_keyboard=True
-)
+class AdminAssign(StatesGroup):
+    waiting_for_user = State()
+    waiting_for_remove = State()
 
-# ----- Клавиатура для админа (включает кнопки пользователя + админские) -----
-admin_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="✅ Работаю"), KeyboardButton(text="🤒 Болею")],
-        [KeyboardButton(text="🏖 Отпуск"), KeyboardButton(text="✍️ Свой вариант")],
-        [KeyboardButton(text="ℹ️ Проверить последний статус"), KeyboardButton(text="✏️ Изменить статус")],
-        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🗂 История статусов")],
-        [KeyboardButton(text="👥 Список пользователей"), KeyboardButton(text="🔑 Список админов")],
-        [KeyboardButton(text="📢 Рассылка")]
-    ],
-    resize_keyboard=True
-)
+# --- Кнопки ---
+user_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+user_kb.add("🟢 Я на работе (СП)")
+user_kb.add("🔴 Я болею (Б)")
+user_kb.add("🕒 Я в дороге (СП)")
+user_kb.add("📌 У меня отгул (Вр)")
 
-# ----- Состояние админа для рассылки -----
-broadcast_state = {}  # {user_id: True}, если админ пишет текст для рассылки
+admin_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+admin_kb.add("📊 Посмотреть всех пользователей")
+admin_kb.add("👑 Назначить админа")
+admin_kb.add("❌ Убрать админа")
+admin_kb.add("✉️ Сделать рассылку")
 
-# ----- Хэндлеры -----
-@dp.message(Command("start"))
-async def start_handler(message: types.Message):
+# --- Старт ---
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
-    today = date.today()
-
-    if message.from_user.id in ADMINS:
-        kb = admin_kb
-        text = "👋 Привет, админ! У тебя есть доступ к расширенной панели."
-    else:
-        kb = status_kb
-        text = "👋 Привет! Добро пожаловать в бот статусов."
-
-    if user:
-        if user.get("status") and user.get("last_update") != today:
-            await update_status(user["id"], user["status"])
-        text += f"\nТы уже зарегистрирован как: {user['full_name']}"
-        await message.answer(text, reply_markup=kb)
-    else:
-        text += "\nВведи своё ФИО для регистрации."
-        await message.answer(text, reply_markup=kb)
-
-@dp.message()
-async def process_message(message: types.Message):
-    user = await get_user(message.from_user.id)
-    text = message.text.strip()
-
-    # --- Если пользователь не зарегистрирован ---
     if not user:
-        await add_user(message.from_user.id, text)
-        await message.answer(f"✅ Зарегистрировал тебя как: {text}\nТеперь выбери свой статус:", reply_markup=status_kb)
+        await add_user(message.from_user.id, message.from_user.full_name, is_admin=(message.from_user.id == CREATOR_ID))
+        await message.answer(
+            "👋 Привет! Я твой рабочий помощник.\n\n"
+            "Со мной ты сможешь отмечать свой статус: работа, отгул, дорога, болезнь.\n"
+            "А админы смогут видеть всех сотрудников и делать рассылки.\n\n"
+            "👉 Давай начнем регистрацию.\n\nВведи, пожалуйста, своё ФИО:"
+        )
+        await Registration.waiting_for_fullname.set()
+    else:
+        # Уже зарегистрирован
+        if user["is_admin"]:
+            kb = admin_kb
+        else:
+            kb = user_kb
+        await message.answer("✅ Бот активен. Меню доступно ниже:", reply_markup=kb)
+
+# --- Регистрация ---
+@dp.message_handler(state=Registration.waiting_for_fullname)
+async def process_fullname(message: types.Message, state: FSMContext):
+    await state.update_data(fullname=message.text)
+    await message.answer("✍️ Теперь введи свой табельный номер:")
+    await Registration.waiting_for_tabel.set()
+
+@dp.message_handler(state=Registration.waiting_for_tabel)
+async def process_tabel(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    fullname = data["fullname"]
+    tabel = message.text
+    # сохраняем ФИО+табель (у тебя можно расширить db.py, тут просто имя сохраняем)
+    await add_user(message.from_user.id, f"{fullname} ({tabel})", is_admin=(message.from_user.id == CREATOR_ID))
+    await state.finish()
+    kb = admin_kb if message.from_user.id == CREATOR_ID else user_kb
+    await message.answer("✅ Регистрация завершена!\nТеперь выбери свой статус:", reply_markup=kb)
+
+# --- Пользовательские статусы ---
+@dp.message_handler(lambda m: m.text in [
+    "🟢 Я на работе (СП)",
+    "🔴 Я болею (Б)",
+    "🕒 Я в дороге (СП)",
+    "📌 У меня отгул (Вр)"
+])
+async def user_status(message: types.Message):
+    await update_status(message.from_user.id, message.text)
+    await message.answer(f"✅ Твой статус обновлён: {message.text}")
+
+# --- Админские функции ---
+@dp.message_handler(lambda m: m.text == "📊 Посмотреть всех пользователей")
+async def show_users(message: types.Message):
+    user = await get_user(message.from_user.id)
+    if not user or not user["is_admin"]:
         return
-
-    # --- Админ в режиме рассылки ---
-    if broadcast_state.get(message.from_user.id):
-        users = await get_all_users()
-        sent, failed = 0, 0
-        for u in users:
-            try:
-                await bot.send_message(u["id"], f"📢 Админ сообщает:\n{text}")
-                sent += 1
-            except:
-                failed += 1
-        await message.answer(f"✅ Сообщение отправлено {sent} пользователям, ошибок: {failed}")
-        broadcast_state[message.from_user.id] = False
-        return
-
-    # --- Админские кнопки ---
-    if message.from_user.id in ADMINS:
-        if text == "📊 Статистика":
-            await admin_stats(message)
-            return
-        if text == "🗂 История статусов":
-            await admin_history(message)
-            return
-        if text == "👥 Список пользователей":
-            await admin_users(message)
-            return
-        if text == "🔑 Список админов":
-            await admin_list(message)
-            return
-        if text == "📢 Рассылка":
-            broadcast_state[message.from_user.id] = True
-            await message.answer("✍️ Напиши текст для рассылки всем пользователям.")
-            return
-
-    # --- Пользовательские команды ---
-    if text == "ℹ️ Проверить последний статус":
-        last_status = user.get("status") or "ещё не выбран"
-        await message.answer(f"📌 Твой последний статус: {last_status}")
-        return
-
-    if text == "✏️ Изменить статус":
-        await message.answer("Выбери новый статус или напиши свой текстом 👇", reply_markup=status_kb)
-        return
-
-    if text == "✍️ Свой вариант":
-        await message.answer("Напиши свой статус сообщением 👇")
-        return
-
-    # Обновление статуса
-    await update_status(user["id"], text)
-    await message.answer(f"📌 Статус обновлён: {text}")
-
-# ----- Админские функции -----
-async def admin_history(message: types.Message):
     users = await get_all_users()
-    text = ""
+    text = "👥 Все пользователи:\n\n"
     for u in users:
-        history = await get_status_history(u["id"])
-        hist_text = ", ".join([f"{h['status_date']}: {h['status']}" for h in history])
-        text += f"{u['full_name']}: {hist_text}\n"
-    await message.answer(text or "История пуста")
-
-async def admin_users(message: types.Message):
-    users = await get_all_users()
-    text = "👥 Зарегистрированные пользователи:\n"
-    for u in users:
-        text += f"- {u['full_name']} (ID: {u['id']})\n"
+        text += f"ID: {u['id']} | {u['full_name']} | {'🛡️ Админ' if u['is_admin'] else '👤 Пользователь'}\n"
     await message.answer(text)
 
-async def admin_list(message: types.Message):
-    text = "🔑 Администраторы:\n"
-    for admin_id in ADMINS:
-        text += f"- {admin_id}\n"
-    await message.answer(text)
-
-async def admin_stats(message: types.Message):
+# --- Назначение админа ---
+@dp.message_handler(lambda m: m.text == "👑 Назначить админа")
+async def assign_admin(message: types.Message):
+    if message.from_user.id != CREATOR_ID:
+        await message.answer("⛔ Только создатель может назначать админов.")
+        return
     users = await get_all_users()
-    stats = {}
+    kb = InlineKeyboardMarkup()
     for u in users:
-        last_status = u.get("status") or "Не выбран"
-        stats[last_status] = stats.get(last_status, 0) + 1
+        if not u["is_admin"]:
+            kb.add(InlineKeyboardButton(u["full_name"], callback_data=f"makeadmin_{u['id']}"))
+    await message.answer("Выбери пользователя для назначения админом:", reply_markup=kb)
 
-    text = "📊 Статистика текущих статусов:\n"
-    for status, count in stats.items():
-        text += f"- {status}: {count}\n"
-    await message.answer(text)
+@dp.callback_query_handler(lambda c: c.data.startswith("makeadmin_"))
+async def make_admin(call: types.CallbackQuery):
+    user_id = int(call.data.split("_")[1])
+    conn = await get_user(user_id)
+    if conn:
+        from db import asyncpg, DB_URL
+        db = await asyncpg.connect(DB_URL)
+        await db.execute("UPDATE users SET is_admin=TRUE WHERE id=$1", user_id)
+        await db.close()
+        await call.message.answer(f"✅ Пользователь {conn['full_name']} назначен админом.")
+    await call.answer()
 
-# ----- Ежедневное напоминание -----
-async def send_daily_reminder():
+# --- Удаление админа ---
+@dp.message_handler(lambda m: m.text == "❌ Убрать админа")
+async def remove_admin(message: types.Message):
+    if message.from_user.id != CREATOR_ID:
+        await message.answer("⛔ Только создатель может убирать админов.")
+        return
+    admins = await get_admins()
+    kb = InlineKeyboardMarkup()
+    for u in admins:
+        if u["id"] != CREATOR_ID:
+            kb.add(InlineKeyboardButton(u["full_name"], callback_data=f"removeadmin_{u['id']}"))
+    await message.answer("Выбери админа для снятия полномочий:", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith("removeadmin_"))
+async def do_remove_admin(call: types.CallbackQuery):
+    user_id = int(call.data.split("_")[1])
+    from db import asyncpg, DB_URL
+    db = await asyncpg.connect(DB_URL)
+    await db.execute("UPDATE users SET is_admin=FALSE WHERE id=$1", user_id)
+    await db.close()
+    await call.message.answer(f"✅ Пользователь {user_id} лишён прав админа.")
+    await call.answer()
+
+# --- Рассылка ---
+@dp.message_handler(lambda m: m.text == "✉️ Сделать рассылку")
+async def start_broadcast(message: types.Message):
+    user = await get_user(message.from_user.id)
+    if not user or not user["is_admin"]:
+        return
+    await message.answer("✍️ Напиши текст рассылки:")
+    await Broadcast.waiting_for_text.set()
+
+@dp.message_handler(state=Broadcast.waiting_for_text)
+async def send_broadcast(message: types.Message, state: FSMContext):
+    text = message.text
     users = await get_all_users()
-    for user in users:
+    for u in users:
         try:
-            await bot.send_message(user["id"], "⏰ Пожалуйста, обнови свой статус на сегодня!", reply_markup=status_kb)
-        except Exception as e:
-            print(f"Не удалось отправить сообщение {user['id']}: {e}")
+            await bot.send_message(u["id"], f"📢 Рассылка:\n\n{text}")
+        except:
+            pass
+    await message.answer("✅ Рассылка завершена.")
+    await state.finish()
 
-# ----- Webhook сервер -----
-async def handle(request):
-    data = await request.json()
-    update = types.Update(**data)
-    await dp.feed_update(bot, update)
-    return web.Response()
-
-async def on_startup(app):
-    await bot.delete_webhook(drop_pending_updates=True)
-    await bot.set_webhook(WEBHOOK_URL)
-    print(f"Webhook установлен: {WEBHOOK_URL}")
-
-async def on_cleanup(app):
-    await bot.delete_webhook()
-    await bot.session.close()
-
-async def start_webhook():
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle)
-    app.on_startup.append(on_startup)
-    app.on_cleanup.append(on_cleanup)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
-    await site.start()
-    print(f"Webhook сервер запущен на порту {PORT}")
-
-# ----- Главная функция -----
-async def main():
+# --- Запуск ---
+async def on_startup(dp):
     await init_db()
-    scheduler = AsyncIOScheduler(timezone=timezone("Asia/Samarkand"))
-    scheduler.add_job(send_daily_reminder, 'cron', hour=18, minute=0)
-    scheduler.start()
-    await start_webhook()
-    while True:
-        await asyncio.sleep(3600)
+    logging.info("Бот запущен!")
 
-# ----- Запуск -----
 if __name__ == "__main__":
-    asyncio.run(main())
+    executor.start_polling(dp, on_startup=on_startup)
