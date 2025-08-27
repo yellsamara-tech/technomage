@@ -7,3 +7,4 @@ pytz
 aiohttp
 nest_asyncio
 openpyxl
+aiosqlite
