@@ -6,3 +6,4 @@ apscheduler
 pytz
 aiohttp
 nest_asyncio
+openpyxl
