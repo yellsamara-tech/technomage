@@ -7,6 +7,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiohttp import web
 from db import init_db, add_user, get_user, update_status, get_all_users, get_admins, make_admin, revoke_admin
 
 # ----- Переменные окружения -----
@@ -15,6 +16,8 @@ if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден")
 
 CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))  # твой ID
+RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")
+PORT = int(os.getenv("PORT", 5000))
 
 # ----- Инициализация бота и диспетчера -----
 storage = MemoryStorage()
@@ -32,14 +35,8 @@ class Broadcast(StatesGroup):
 # ----- Клавиатуры -----
 user_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [
-            KeyboardButton(text="🟢 Я на работе (СП)"),
-            KeyboardButton(text="🔴 Я болею (Б)")
-        ],
-        [
-            KeyboardButton(text="🕒 Я в дороге (СП)"),
-            KeyboardButton(text="📌 У меня отгул (Вр)")
-        ]
+        [KeyboardButton(text="🟢 Я на работе (СП)"), KeyboardButton(text="🔴 Я болею (Б)")],
+        [KeyboardButton(text="🕒 Я в дороге (СП)"), KeyboardButton(text="📌 У меня отгул (Вр)")]
     ],
     resize_keyboard=True
 )
@@ -47,14 +44,14 @@ user_kb = ReplyKeyboardMarkup(
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 Посмотреть всех пользователей")],
-        [
-            KeyboardButton(text="👑 Назначить админа"),
-            KeyboardButton(text="❌ Убрать админа")
-        ],
+        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа")],
         [KeyboardButton(text="✉️ Сделать рассылку")]
     ],
     resize_keyboard=True
 )
+
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{RENDER_URL}{WEBHOOK_PATH}"
 
 # ----- /start -----
 @dp.message(Command("start"))
@@ -171,11 +168,41 @@ async def send_broadcast(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Рассылка завершена.\nУспешно: {success}, Ошибки: {fail}")
     await state.clear()
 
-# ----- Запуск -----
+# ----- Webhook сервер -----
+async def handle(request):
+    data = await request.json()
+    update = types.Update(**data)
+    await dp.feed_update(bot, update)
+    return web.Response()
+
+async def on_startup(app):
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(WEBHOOK_URL)
+    print(f"Webhook установлен: {WEBHOOK_URL}")
+
+async def on_cleanup(app):
+    await bot.delete_webhook()
+    await bot.session.close()
+
+async def start_webhook():
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, handle)
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+    print(f"Webhook сервер запущен на порту {PORT}")
+
+# ----- Главная функция -----
 async def main():
     await init_db()
     print("Бот запущен!")
-    await dp.start_polling(bot)
+    await start_webhook()
+    while True:
+        await asyncio.sleep(3600)
 
+# ----- Запуск -----
 if __name__ == "__main__":
     asyncio.run(main())
