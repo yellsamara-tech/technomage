@@ -1,32 +1,27 @@
 import os
 import asyncio
+from datetime import date
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiohttp import web
 from db import init_db, add_user, get_user, update_status, get_all_users, get_admins, make_admin, revoke_admin
 
-# ===============================
-# Настройки
-# ===============================
+# ----- Переменные окружения -----
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))
-DOMAIN = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-PORT = int(os.getenv("PORT", 5000))
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден")
 
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = f"https://{DOMAIN}{WEBHOOK_PATH}"
+CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))  # твой ID
 
-bot = Bot(token=BOT_TOKEN)
+# ----- Инициализация бота и диспетчера -----
 storage = MemoryStorage()
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# ===============================
-# FSM состояния
-# ===============================
+# ----- FSM состояния -----
 class Registration(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_tabel = State()
@@ -34,33 +29,39 @@ class Registration(StatesGroup):
 class Broadcast(StatesGroup):
     waiting_for_text = State()
 
-# ===============================
-# Клавиатуры
-# ===============================
+# ----- Клавиатуры -----
 user_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton("🟢 Я на работе (СП)"), KeyboardButton("🔴 Я болею (Б)")],
-        [KeyboardButton("🕒 Я в дороге (СП)"), KeyboardButton("📌 У меня отгул (Вр)")]
+        [
+            KeyboardButton(text="🟢 Я на работе (СП)"),
+            KeyboardButton(text="🔴 Я болею (Б)")
+        ],
+        [
+            KeyboardButton(text="🕒 Я в дороге (СП)"),
+            KeyboardButton(text="📌 У меня отгул (Вр)")
+        ]
     ],
     resize_keyboard=True
 )
 
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton("📊 Посмотреть всех пользователей")],
-        [KeyboardButton("👑 Назначить админа"), KeyboardButton("❌ Убрать админа")],
-        [KeyboardButton("✉️ Сделать рассылку")]
+        [KeyboardButton(text="📊 Посмотреть всех пользователей")],
+        [
+            KeyboardButton(text="👑 Назначить админа"),
+            KeyboardButton(text="❌ Убрать админа")
+        ],
+        [KeyboardButton(text="✉️ Сделать рассылку")]
     ],
     resize_keyboard=True
 )
 
-# ===============================
-# /start
-# ===============================
+# ----- /start -----
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
     if not user:
+        # Новый пользователь
         await message.answer(
             "👋 Привет! Я твой рабочий помощник.\n"
             "Ты сможешь отмечать свой статус: работа, болезнь, дорога, отгул.\n"
@@ -72,41 +73,31 @@ async def cmd_start(message: types.Message, state: FSMContext):
         kb = admin_kb if user.get("is_admin") or message.from_user.id == CREATOR_ID else user_kb
         await message.answer("✅ Бот активен. Меню доступно ниже:", reply_markup=kb)
 
-# ===============================
-# Регистрация
-# ===============================
-@dp.message(lambda m: m.text and m.text.strip())
-async def registration_handler(message: types.Message, state: FSMContext):
-    user = await get_user(message.from_user.id)
-    if not user:
-        data = await state.get_data()
-        if state.get_state() == Registration.waiting_for_fullname:
-            await state.update_data(fullname=message.text)
-            await message.answer("✍️ Теперь введи свой табельный номер:")
-            await state.set_state(Registration.waiting_for_tabel)
-            return
-        elif state.get_state() == Registration.waiting_for_tabel:
-            data = await state.get_data()
-            fullname = data.get("fullname")
-            tabel = message.text
-            is_admin = message.from_user.id == CREATOR_ID
-            await add_user(message.from_user.id, f"{fullname} ({tabel})", is_admin=is_admin)
-            await state.clear()
-            kb = admin_kb if is_admin else user_kb
-            await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
-            return
+# ----- Регистрация -----
+@dp.message(Registration.waiting_for_fullname)
+async def reg_fullname(message: types.Message, state: FSMContext):
+    await state.update_data(fullname=message.text)
+    await message.answer("✍️ Теперь введи свой табельный номер:")
+    await state.set_state(Registration.waiting_for_tabel)
 
-# ===============================
-# Пользовательские статусы
-# ===============================
-@dp.message(lambda m: m.text and m.text.startswith(("🟢","🔴","🕒","📌")))
+@dp.message(Registration.waiting_for_tabel)
+async def reg_tabel(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    fullname = data["fullname"]
+    tabel = message.text
+    is_admin = message.from_user.id == CREATOR_ID
+    await add_user(message.from_user.id, f"{fullname} ({tabel})", is_admin=is_admin)
+    await state.clear()
+    kb = admin_kb if is_admin else user_kb
+    await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
+
+# ----- Пользовательские статусы -----
+@dp.message(lambda m: m.text in ["🟢 Я на работе (СП)", "🔴 Я болею (Б)", "🕒 Я в дороге (СП)", "📌 У меня отгул (Вр)"])
 async def set_user_status(message: types.Message):
     await update_status(message.from_user.id, message.text)
     await message.answer(f"✅ Твой статус обновлён: {message.text}")
 
-# ===============================
-# Админские команды
-# ===============================
+# ----- Админские команды -----
 @dp.message(lambda m: m.text == "📊 Посмотреть всех пользователей")
 async def admin_show_users(message: types.Message):
     user = await get_user(message.from_user.id)
@@ -165,7 +156,7 @@ async def admin_broadcast(message: types.Message, state: FSMContext):
     await message.answer("✍️ Напиши текст рассылки:")
     await state.set_state(Broadcast.waiting_for_text)
 
-@dp.message(lambda m: state.get_state() == Broadcast.waiting_for_text if (state:=dp.current_state(chat=m.chat.id, user=m.from_user.id)) else False)
+@dp.message(Broadcast.waiting_for_text)
 async def send_broadcast(message: types.Message, state: FSMContext):
     text = message.text
     users = await get_all_users()
@@ -180,39 +171,11 @@ async def send_broadcast(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Рассылка завершена.\nУспешно: {success}, Ошибки: {fail}")
     await state.clear()
 
-# ===============================
-# Webhook сервер
-# ===============================
-async def handle(request: web.Request):
-    data = await request.json()
-    update = types.Update(**data)
-    await dp.feed_update(bot, update)
-    return web.Response()
-
-async def on_startup(app: web.Application):
-    await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-    print(f"Webhook установлен: {WEBHOOK_URL}")
-
-async def on_cleanup(app: web.Application):
-    await bot.delete_webhook()
-    await bot.session.close()
-
-# ===============================
-# Запуск aiohttp
-# ===============================
+# ----- Запуск -----
 async def main():
     await init_db()
-    app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, handle)
-    app.on_startup.append(on_startup)
-    app.on_cleanup.append(on_cleanup)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
-    await site.start()
-    print(f"Webhook сервер запущен на порту {PORT}")
-    while True:
-        await asyncio.sleep(3600)
+    print("Бот запущен!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
