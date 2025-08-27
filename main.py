@@ -2,7 +2,6 @@ import os
 import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.filters.text import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
@@ -76,27 +75,31 @@ async def cmd_start(message: types.Message, state: FSMContext):
 # ===============================
 # Регистрация
 # ===============================
-@dp.message(Registration.waiting_for_fullname)
-async def reg_fullname(message: types.Message, state: FSMContext):
-    await state.update_data(fullname=message.text)
-    await message.answer("✍️ Теперь введи свой табельный номер:")
-    await state.set_state(Registration.waiting_for_tabel)
-
-@dp.message(Registration.waiting_for_tabel)
-async def reg_tabel(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    fullname = data["fullname"]
-    tabel = message.text
-    is_admin = message.from_user.id == CREATOR_ID
-    await add_user(message.from_user.id, f"{fullname} ({tabel})", is_admin=is_admin)
-    await state.clear()
-    kb = admin_kb if is_admin else user_kb
-    await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
+@dp.message(lambda m: m.text and m.text.strip())
+async def registration_handler(message: types.Message, state: FSMContext):
+    user = await get_user(message.from_user.id)
+    if not user:
+        data = await state.get_data()
+        if state.get_state() == Registration.waiting_for_fullname:
+            await state.update_data(fullname=message.text)
+            await message.answer("✍️ Теперь введи свой табельный номер:")
+            await state.set_state(Registration.waiting_for_tabel)
+            return
+        elif state.get_state() == Registration.waiting_for_tabel:
+            data = await state.get_data()
+            fullname = data.get("fullname")
+            tabel = message.text
+            is_admin = message.from_user.id == CREATOR_ID
+            await add_user(message.from_user.id, f"{fullname} ({tabel})", is_admin=is_admin)
+            await state.clear()
+            kb = admin_kb if is_admin else user_kb
+            await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
+            return
 
 # ===============================
 # Пользовательские статусы
 # ===============================
-@dp.message(Text(startswith=["🟢", "🔴", "🕒", "📌"]))
+@dp.message(lambda m: m.text and m.text.startswith(("🟢","🔴","🕒","📌")))
 async def set_user_status(message: types.Message):
     await update_status(message.from_user.id, message.text)
     await message.answer(f"✅ Твой статус обновлён: {message.text}")
@@ -104,7 +107,7 @@ async def set_user_status(message: types.Message):
 # ===============================
 # Админские команды
 # ===============================
-@dp.message(Text(equals="📊 Посмотреть всех пользователей"))
+@dp.message(lambda m: m.text == "📊 Посмотреть всех пользователей")
 async def admin_show_users(message: types.Message):
     user = await get_user(message.from_user.id)
     if not user or (not user.get("is_admin") and message.from_user.id != CREATOR_ID):
@@ -115,7 +118,7 @@ async def admin_show_users(message: types.Message):
         text += f"{u['id']} | {u['full_name']} | {'🛡️ Админ' if u['is_admin'] else '👤 Пользователь'}\n"
     await message.answer(text)
 
-@dp.message(Text(equals="👑 Назначить админа"))
+@dp.message(lambda m: m.text == "👑 Назначить админа")
 async def admin_assign(message: types.Message):
     if message.from_user.id != CREATOR_ID:
         await message.answer("⛔ Только создатель может назначать админов")
@@ -135,7 +138,7 @@ async def callback_makeadmin(call: types.CallbackQuery):
     await call.message.answer(f"✅ Пользователь {user['full_name']} назначен админом.")
     await call.answer()
 
-@dp.message(Text(equals="❌ Убрать админа"))
+@dp.message(lambda m: m.text == "❌ Убрать админа")
 async def admin_remove(message: types.Message):
     if message.from_user.id != CREATOR_ID:
         await message.answer("⛔ Только создатель может снимать админов")
@@ -154,7 +157,7 @@ async def callback_removeadmin(call: types.CallbackQuery):
     await call.message.answer(f"✅ Пользователь {user_id} лишён прав админа.")
     await call.answer()
 
-@dp.message(Text(equals="✉️ Сделать рассылку"))
+@dp.message(lambda m: m.text == "✉️ Сделать рассылку")
 async def admin_broadcast(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
     if not user or (not user.get("is_admin") and message.from_user.id != CREATOR_ID):
@@ -162,7 +165,7 @@ async def admin_broadcast(message: types.Message, state: FSMContext):
     await message.answer("✍️ Напиши текст рассылки:")
     await state.set_state(Broadcast.waiting_for_text)
 
-@dp.message(Broadcast.waiting_for_text)
+@dp.message(lambda m: state.get_state() == Broadcast.waiting_for_text if (state:=dp.current_state(chat=m.chat.id, user=m.from_user.id)) else False)
 async def send_broadcast(message: types.Message, state: FSMContext):
     text = message.text
     users = await get_all_users()
