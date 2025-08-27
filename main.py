@@ -1,25 +1,27 @@
 import os
-import logging
+import asyncio
+from datetime import date
 from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command, Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.utils import executor
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from db import init_db, add_user, get_user, update_status, get_all_users, get_admins, make_admin, revoke_admin
 
-from db import init_db, add_user, get_user, update_status, get_all_users, get_admins
+# --- Переменные окружения ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден")
 
-logging.basicConfig(level=logging.INFO)
+CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))  # твой ID
 
-API_TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=API_TOKEN)
+# --- Инициализация бота и dispatcher ---
 storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=storage)
 
-# --- Константы ---
-CREATOR_ID = 452908347
-
-# --- Состояния ---
+# --- FSM состояния ---
 class Registration(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_tabel = State()
@@ -27,158 +29,147 @@ class Registration(StatesGroup):
 class Broadcast(StatesGroup):
     waiting_for_text = State()
 
-class AdminAssign(StatesGroup):
-    waiting_for_user = State()
-    waiting_for_remove = State()
+# --- Клавиатуры ---
+user_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton("🟢 Я на работе (СП)"), KeyboardButton("🔴 Я болею (Б)")],
+        [KeyboardButton("🕒 Я в дороге (СП)"), KeyboardButton("📌 У меня отгул (Вр)")]
+    ],
+    resize_keyboard=True
+)
 
-# --- Кнопки ---
-user_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-user_kb.add("🟢 Я на работе (СП)")
-user_kb.add("🔴 Я болею (Б)")
-user_kb.add("🕒 Я в дороге (СП)")
-user_kb.add("📌 У меня отгул (Вр)")
+admin_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton("📊 Посмотреть всех пользователей")],
+        [KeyboardButton("👑 Назначить админа"), KeyboardButton("❌ Убрать админа")],
+        [KeyboardButton("✉️ Сделать рассылку")]
+    ],
+    resize_keyboard=True
+)
 
-admin_kb = ReplyKeyboardMarkup(resize_keyboard=True)
-admin_kb.add("📊 Посмотреть всех пользователей")
-admin_kb.add("👑 Назначить админа")
-admin_kb.add("❌ Убрать админа")
-admin_kb.add("✉️ Сделать рассылку")
-
-# --- Старт ---
-@dp.message_handler(commands=["start"])
+# --- /start ---
+@dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
     if not user:
-        await add_user(message.from_user.id, message.from_user.full_name, is_admin=(message.from_user.id == CREATOR_ID))
+        # новый пользователь
         await message.answer(
-            "👋 Привет! Я твой рабочий помощник.\n\n"
-            "Со мной ты сможешь отмечать свой статус: работа, отгул, дорога, болезнь.\n"
-            "А админы смогут видеть всех сотрудников и делать рассылки.\n\n"
-            "👉 Давай начнем регистрацию.\n\nВведи, пожалуйста, своё ФИО:"
+            "👋 Привет! Я твой рабочий помощник.\n"
+            "Ты сможешь отмечать свой статус: работа, болезнь, дорога, отгул.\n"
+            "Админы смогут видеть всех пользователей и делать рассылки.\n\n"
+            "👉 Давай начнем регистрацию.\nВведи своё ФИО:"
         )
-        await Registration.waiting_for_fullname.set()
+        await state.set_state(Registration.waiting_for_fullname)
     else:
-        # Уже зарегистрирован
-        if user["is_admin"]:
-            kb = admin_kb
-        else:
-            kb = user_kb
+        kb = admin_kb if user.get("is_admin") or message.from_user.id == CREATOR_ID else user_kb
         await message.answer("✅ Бот активен. Меню доступно ниже:", reply_markup=kb)
 
 # --- Регистрация ---
-@dp.message_handler(state=Registration.waiting_for_fullname)
-async def process_fullname(message: types.Message, state: FSMContext):
+@dp.message(Registration.waiting_for_fullname)
+async def reg_fullname(message: types.Message, state: FSMContext):
     await state.update_data(fullname=message.text)
     await message.answer("✍️ Теперь введи свой табельный номер:")
-    await Registration.waiting_for_tabel.set()
+    await state.set_state(Registration.waiting_for_tabel)
 
-@dp.message_handler(state=Registration.waiting_for_tabel)
-async def process_tabel(message: types.Message, state: FSMContext):
+@dp.message(Registration.waiting_for_tabel)
+async def reg_tabel(message: types.Message, state: FSMContext):
     data = await state.get_data()
     fullname = data["fullname"]
     tabel = message.text
-    # сохраняем ФИО+табель (у тебя можно расширить db.py, тут просто имя сохраняем)
-    await add_user(message.from_user.id, f"{fullname} ({tabel})", is_admin=(message.from_user.id == CREATOR_ID))
-    await state.finish()
-    kb = admin_kb if message.from_user.id == CREATOR_ID else user_kb
-    await message.answer("✅ Регистрация завершена!\nТеперь выбери свой статус:", reply_markup=kb)
+    is_admin = message.from_user.id == CREATOR_ID
+    await add_user(message.from_user.id, f"{fullname} ({tabel})", is_admin=is_admin)
+    await state.clear()
+    kb = admin_kb if is_admin else user_kb
+    await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
 
 # --- Пользовательские статусы ---
-@dp.message_handler(lambda m: m.text in [
-    "🟢 Я на работе (СП)",
-    "🔴 Я болею (Б)",
-    "🕒 Я в дороге (СП)",
-    "📌 У меня отгул (Вр)"
-])
-async def user_status(message: types.Message):
+@dp.message(Text(startswith=["🟢", "🔴", "🕒", "📌"]))
+async def set_user_status(message: types.Message):
     await update_status(message.from_user.id, message.text)
     await message.answer(f"✅ Твой статус обновлён: {message.text}")
 
-# --- Админские функции ---
-@dp.message_handler(lambda m: m.text == "📊 Посмотреть всех пользователей")
-async def show_users(message: types.Message):
+# --- Админские команды ---
+@dp.message(Text(equals="📊 Посмотреть всех пользователей"))
+async def admin_show_users(message: types.Message):
     user = await get_user(message.from_user.id)
-    if not user or not user["is_admin"]:
+    if not user or (not user.get("is_admin") and message.from_user.id != CREATOR_ID):
         return
     users = await get_all_users()
-    text = "👥 Все пользователи:\n\n"
+    text = "👥 Все пользователи:\n"
     for u in users:
-        text += f"ID: {u['id']} | {u['full_name']} | {'🛡️ Админ' if u['is_admin'] else '👤 Пользователь'}\n"
+        text += f"{u['id']} | {u['full_name']} | {'🛡️ Админ' if u['is_admin'] else '👤 Пользователь'}\n"
     await message.answer(text)
 
 # --- Назначение админа ---
-@dp.message_handler(lambda m: m.text == "👑 Назначить админа")
-async def assign_admin(message: types.Message):
+@dp.message(Text(equals="👑 Назначить админа"))
+async def admin_assign(message: types.Message):
     if message.from_user.id != CREATOR_ID:
-        await message.answer("⛔ Только создатель может назначать админов.")
+        await message.answer("⛔ Только создатель может назначать админов")
         return
     users = await get_all_users()
-    kb = InlineKeyboardMarkup()
+    kb = InlineKeyboardMarkup(row_width=1)
     for u in users:
         if not u["is_admin"]:
             kb.add(InlineKeyboardButton(u["full_name"], callback_data=f"makeadmin_{u['id']}"))
     await message.answer("Выбери пользователя для назначения админом:", reply_markup=kb)
 
-@dp.callback_query_handler(lambda c: c.data.startswith("makeadmin_"))
-async def make_admin(call: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data.startswith("makeadmin_"))
+async def callback_makeadmin(call: types.CallbackQuery):
     user_id = int(call.data.split("_")[1])
-    conn = await get_user(user_id)
-    if conn:
-        from db import asyncpg, DB_URL
-        db = await asyncpg.connect(DB_URL)
-        await db.execute("UPDATE users SET is_admin=TRUE WHERE id=$1", user_id)
-        await db.close()
-        await call.message.answer(f"✅ Пользователь {conn['full_name']} назначен админом.")
+    await make_admin(user_id)
+    user = await get_user(user_id)
+    await call.message.answer(f"✅ Пользователь {user['full_name']} назначен админом.")
     await call.answer()
 
-# --- Удаление админа ---
-@dp.message_handler(lambda m: m.text == "❌ Убрать админа")
-async def remove_admin(message: types.Message):
+# --- Снятие админа ---
+@dp.message(Text(equals="❌ Убрать админа"))
+async def admin_remove(message: types.Message):
     if message.from_user.id != CREATOR_ID:
-        await message.answer("⛔ Только создатель может убирать админов.")
+        await message.answer("⛔ Только создатель может снимать админов")
         return
     admins = await get_admins()
-    kb = InlineKeyboardMarkup()
+    kb = InlineKeyboardMarkup(row_width=1)
     for u in admins:
         if u["id"] != CREATOR_ID:
             kb.add(InlineKeyboardButton(u["full_name"], callback_data=f"removeadmin_{u['id']}"))
-    await message.answer("Выбери админа для снятия полномочий:", reply_markup=kb)
+    await message.answer("Выбери админа для снятия прав:", reply_markup=kb)
 
-@dp.callback_query_handler(lambda c: c.data.startswith("removeadmin_"))
-async def do_remove_admin(call: types.CallbackQuery):
+@dp.callback_query(lambda c: c.data.startswith("removeadmin_"))
+async def callback_removeadmin(call: types.CallbackQuery):
     user_id = int(call.data.split("_")[1])
-    from db import asyncpg, DB_URL
-    db = await asyncpg.connect(DB_URL)
-    await db.execute("UPDATE users SET is_admin=FALSE WHERE id=$1", user_id)
-    await db.close()
+    await revoke_admin(user_id)
     await call.message.answer(f"✅ Пользователь {user_id} лишён прав админа.")
     await call.answer()
 
 # --- Рассылка ---
-@dp.message_handler(lambda m: m.text == "✉️ Сделать рассылку")
-async def start_broadcast(message: types.Message):
+@dp.message(Text(equals="✉️ Сделать рассылку"))
+async def admin_broadcast(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
-    if not user or not user["is_admin"]:
+    if not user or (not user.get("is_admin") and message.from_user.id != CREATOR_ID):
         return
     await message.answer("✍️ Напиши текст рассылки:")
-    await Broadcast.waiting_for_text.set()
+    await state.set_state(Broadcast.waiting_for_text)
 
-@dp.message_handler(state=Broadcast.waiting_for_text)
+@dp.message(Broadcast.waiting_for_text)
 async def send_broadcast(message: types.Message, state: FSMContext):
     text = message.text
     users = await get_all_users()
+    success = 0
+    fail = 0
     for u in users:
         try:
             await bot.send_message(u["id"], f"📢 Рассылка:\n\n{text}")
+            success += 1
         except:
-            pass
-    await message.answer("✅ Рассылка завершена.")
-    await state.finish()
+            fail += 1
+    await message.answer(f"✅ Рассылка завершена.\nУспешно: {success}, Ошибки: {fail}")
+    await state.clear()
 
 # --- Запуск ---
-async def on_startup(dp):
+async def main():
     await init_db()
-    logging.info("Бот запущен!")
+    print("Бот запущен!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    executor.start_polling(dp, on_startup=on_startup)
+    asyncio.run(main())
