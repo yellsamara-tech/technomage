@@ -1,3 +1,4 @@
+
 import os
 import asyncio
 from datetime import date
@@ -39,9 +40,12 @@ status_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ----- Клавиатура для админа -----
+# ----- Клавиатура для админа (включает кнопки пользователя + админские) -----
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
+        [KeyboardButton(text="✅ Работаю"), KeyboardButton(text="🤒 Болею")],
+        [KeyboardButton(text="🏖 Отпуск"), KeyboardButton(text="✍️ Свой вариант")],
+        [KeyboardButton(text="ℹ️ Проверить последний статус"), KeyboardButton(text="✏️ Изменить статус")],
         [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="🗂 История статусов")],
         [KeyboardButton(text="👥 Список пользователей"), KeyboardButton(text="🔑 Список админов")],
         [KeyboardButton(text="📢 Рассылка")]
@@ -49,20 +53,21 @@ admin_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# ----- Состояние админа для рассылки -----
+broadcast_state = {}  # {user_id: True}, если админ пишет текст для рассылки
+
 # ----- Хэндлеры -----
 @dp.message(Command("start"))
 async def start_handler(message: types.Message):
     user = await get_user(message.from_user.id)
     today = date.today()
 
-    text = "👋 Привет! Добро пожаловать в бот статусов.\n"
-
     if message.from_user.id in ADMINS:
-        text += "✅ У тебя есть права администратора."
         kb = admin_kb
+        text = "👋 Привет, админ! У тебя есть доступ к расширенной панели."
     else:
-        text += "📌 Ты обычный пользователь."
         kb = status_kb
+        text = "👋 Привет! Добро пожаловать в бот статусов."
 
     if user:
         if user.get("status") and user.get("last_update") != today:
@@ -78,10 +83,24 @@ async def process_message(message: types.Message):
     user = await get_user(message.from_user.id)
     text = message.text.strip()
 
-    # Если пользователь не зарегистрирован
+    # --- Если пользователь не зарегистрирован ---
     if not user:
         await add_user(message.from_user.id, text)
         await message.answer(f"✅ Зарегистрировал тебя как: {text}\nТеперь выбери свой статус:", reply_markup=status_kb)
+        return
+
+    # --- Админ в режиме рассылки ---
+    if broadcast_state.get(message.from_user.id):
+        users = await get_all_users()
+        sent, failed = 0, 0
+        for u in users:
+            try:
+                await bot.send_message(u["id"], f"📢 Админ сообщает:\n{text}")
+                sent += 1
+            except:
+                failed += 1
+        await message.answer(f"✅ Сообщение отправлено {sent} пользователям, ошибок: {failed}")
+        broadcast_state[message.from_user.id] = False
         return
 
     # --- Админские кнопки ---
@@ -99,9 +118,8 @@ async def process_message(message: types.Message):
             await admin_list(message)
             return
         if text == "📢 Рассылка":
+            broadcast_state[message.from_user.id] = True
             await message.answer("✍️ Напиши текст для рассылки всем пользователям.")
-            # Ждем следующее сообщение с текстом рассылки
-            dp.register_message_handler(handle_broadcast_text, state=None)
             return
 
     # --- Пользовательские команды ---
@@ -121,25 +139,6 @@ async def process_message(message: types.Message):
     # Обновление статуса
     await update_status(user["id"], text)
     await message.answer(f"📌 Статус обновлён: {text}")
-
-# ----- Обработчик рассылки (админ) -----
-async def handle_broadcast_text(message: types.Message):
-    if message.from_user.id not in ADMINS:
-        return
-
-    text_to_send = message.text.strip()
-    users = await get_all_users()
-    sent, failed = 0, 0
-    for u in users:
-        try:
-            await bot.send_message(u["id"], f"📢 Админ сообщает:\n{text_to_send}")
-            sent += 1
-        except:
-            failed += 1
-
-    await message.answer(f"✅ Сообщение отправлено {sent} пользователям, ошибок: {failed}")
-    # Убираем обработчик после рассылки
-    dp.message_handlers.unregister(handle_broadcast_text)
 
 # ----- Админские функции -----
 async def admin_history(message: types.Message):
