@@ -26,6 +26,9 @@ dp = Dispatcher()
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{RENDER_URL}{WEBHOOK_PATH}"
 
+# ----- Жестко прописанные админы -----
+ADMINS = [452908347]
+
 # ----- Горячие кнопки -----
 status_kb = ReplyKeyboardMarkup(
     keyboard=[
@@ -41,15 +44,22 @@ status_kb = ReplyKeyboardMarkup(
 async def start_handler(message: types.Message):
     user = await get_user(message.from_user.id)
     today = date.today()
+
+    text = "👋 Привет! Добро пожаловать в бот статусов.\n"
+
+    if message.from_user.id in ADMINS:
+        text += "✅ У тебя есть права администратора.\n"
+    else:
+        text += "📌 Ты обычный пользователь.\n"
+
     if user:
         if user.get("status") and user.get("last_update") != today:
             await update_status(user["id"], user["status"])
-        await message.answer(
-            f"Ты уже зарегистрирован как: {user['full_name']}\nВыбери свой статус:",
-            reply_markup=status_kb
-        )
+        text += f"Ты уже зарегистрирован как: {user['full_name']}\nВыбери свой статус:"
+        await message.answer(text, reply_markup=status_kb)
     else:
-        await message.answer("Привет! Введи своё ФИО для регистрации.")
+        text += "Введи своё ФИО для регистрации."
+        await message.answer(text)
 
 @dp.message()
 async def process_message(message: types.Message):
@@ -80,8 +90,7 @@ async def process_message(message: types.Message):
 # ----- Админские команды -----
 @dp.message(Command("history"))
 async def admin_history(message: types.Message):
-    admins = await get_admins()
-    if message.from_user.id not in [a["id"] for a in admins]:
+    if message.from_user.id not in ADMINS:
         await message.answer("❌ У вас нет прав")
         return
 
@@ -92,6 +101,68 @@ async def admin_history(message: types.Message):
         hist_text = ", ".join([f"{h['status_date']}: {h['status']}" for h in history])
         text += f"{u['full_name']}: {hist_text}\n"
     await message.answer(text or "История пуста")
+
+@dp.message(Command("users"))
+async def admin_users(message: types.Message):
+    if message.from_user.id not in ADMINS:
+        await message.answer("❌ У вас нет прав")
+        return
+
+    users = await get_all_users()
+    text = "👥 Зарегистрированные пользователи:\n"
+    for u in users:
+        text += f"- {u['full_name']} (ID: {u['id']})\n"
+    await message.answer(text)
+
+@dp.message(Command("admins"))
+async def admin_list(message: types.Message):
+    if message.from_user.id not in ADMINS:
+        await message.answer("❌ У вас нет прав")
+        return
+
+    text = "🔑 Администраторы:\n"
+    for admin_id in ADMINS:
+        text += f"- {admin_id}\n"
+    await message.answer(text)
+
+@dp.message(Command("broadcast"))
+async def admin_broadcast(message: types.Message):
+    if message.from_user.id not in ADMINS:
+        await message.answer("❌ У вас нет прав")
+        return
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("✍️ Использование: /broadcast текст_сообщения")
+        return
+
+    users = await get_all_users()
+    sent, failed = 0, 0
+    for user in users:
+        try:
+            await bot.send_message(user["id"], f"📢 Админ сообщает:\n{args[1]}")
+            sent += 1
+        except:
+            failed += 1
+
+    await message.answer(f"✅ Сообщение отправлено {sent} пользователям, ошибок: {failed}")
+
+@dp.message(Command("stats"))
+async def admin_stats(message: types.Message):
+    if message.from_user.id not in ADMINS:
+        await message.answer("❌ У вас нет прав")
+        return
+
+    users = await get_all_users()
+    stats = {}
+    for u in users:
+        last_status = u.get("status") or "Не выбран"
+        stats[last_status] = stats.get(last_status, 0) + 1
+
+    text = "📊 Статистика текущих статусов:\n"
+    for status, count in stats.items():
+        text += f"- {status}: {count}\n"
+    await message.answer(text)
 
 # ----- Ежедневное напоминание -----
 async def send_daily_reminder():
@@ -107,7 +178,6 @@ async def handle(request):
     data = await request.json()
     update = types.Update(**data)
     await dp.feed_update(bot, update)
-  # <- используем метод Aiogram 3.x
     return web.Response()
 
 async def on_startup(app):
