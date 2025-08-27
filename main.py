@@ -1,12 +1,12 @@
 import os
 import asyncio
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
+from aiogram.filters.text import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from db import init_db, add_user, get_user, update_status, get_all_users, get_admins, make_admin, revoke_admin
 
@@ -40,17 +40,17 @@ class Broadcast(StatesGroup):
 # ===============================
 user_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🟢 Я на работе (СП)"), KeyboardButton(text="🔴 Я болею (Б)")],
-        [KeyboardButton(text="🕒 Я в дороге (СП)"), KeyboardButton(text="📌 У меня отгул (Вр)")]
+        [KeyboardButton("🟢 Я на работе (СП)"), KeyboardButton("🔴 Я болею (Б)")],
+        [KeyboardButton("🕒 Я в дороге (СП)"), KeyboardButton("📌 У меня отгул (Вр)")]
     ],
     resize_keyboard=True
 )
 
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 Посмотреть всех пользователей")],
-        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа")],
-        [KeyboardButton(text="✉️ Сделать рассылку")]
+        [KeyboardButton("📊 Посмотреть всех пользователей")],
+        [KeyboardButton("👑 Назначить админа"), KeyboardButton("❌ Убрать админа")],
+        [KeyboardButton("✉️ Сделать рассылку")]
     ],
     resize_keyboard=True
 )
