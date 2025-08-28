@@ -2,32 +2,31 @@ import os
 import asyncio
 from datetime import date, datetime
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, Text
+from aiogram.filters import Command
+from aiogram.filters.text import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiohttp import web
-import asyncpg
+from db import init_db, add_user, get_user, get_all_users, make_admin, revoke_admin, delete_user, update_status, get_status_history
 
 # ===== Переменные окружения =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
-DB_URL = os.getenv("DATABASE_URL")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
+CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
+
+# ===== Инициализация =====
+storage = MemoryStorage()
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=storage)
 
 # ===== FSM состояния =====
 class Registration(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_tabel = State()
     waiting_for_phone = State()
-
-class AdminActions(StatesGroup):
-    waiting_for_broadcast = State()
-    waiting_for_make_admin = State()
-    waiting_for_revoke_admin = State()
-    waiting_for_delete_user = State()
 
 # ===== Статусы =====
 statuses = ["🟢 Я на работе (СП)", "🔴 Я болею (Б)", "🕒 Я в дороге (СП)", "📌 У меня отгул (Вр)"]
@@ -41,104 +40,6 @@ user_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-admin_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📊 Посмотреть всех пользователей")],
-        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа"), KeyboardButton(text="🗑 Удалить пользователя")],
-        [KeyboardButton(text="✉️ Сделать рассылку"), KeyboardButton(text="📈 Статистика статусов")]
-    ],
-    resize_keyboard=True
-)
-
-# ===== Инициализация бота =====
-storage = MemoryStorage()
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=storage)
-pool: asyncpg.Pool | None = None
-
-# ===== Работа с БД =====
-async def init_db():
-    global pool
-    pool = await asyncpg.create_pool(DB_URL)
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                full_name TEXT,
-                tab_number TEXT,
-                phone TEXT,
-                is_admin BOOLEAN DEFAULT FALSE
-            );
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_statuses (
-                user_id BIGINT,
-                log_date DATE,
-                status TEXT,
-                PRIMARY KEY(user_id, log_date)
-            );
-        """)
-
-async def get_pool() -> asyncpg.Pool:
-    if pool is None:
-        raise RuntimeError("DB pool не инициализирован!")
-    return pool
-
-async def add_user(user_id, full_name, tab_number="", phone="", is_admin=False):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users(user_id, full_name, tab_number, phone, is_admin)
-            VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id) DO NOTHING
-        """, user_id, full_name, tab_number, phone, is_admin)
-
-async def get_user(user_id):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        return await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
-
-async def get_all_users():
-    p = await get_pool()
-    async with p.acquire() as conn:
-        return await conn.fetch("SELECT * FROM users ORDER BY full_name")
-
-async def make_admin(user_id):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute("UPDATE users SET is_admin=TRUE WHERE user_id=$1", user_id)
-
-async def revoke_admin(user_id):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute("UPDATE users SET is_admin=FALSE WHERE user_id=$1", user_id)
-
-async def delete_user(user_id):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute("DELETE FROM users WHERE user_id=$1", user_id)
-        await conn.execute("DELETE FROM user_statuses WHERE user_id=$1", user_id)
-
-async def update_status(user_id, status, log_date=None):
-    log_date = log_date or date.today()
-    if isinstance(log_date, str):
-        log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
-    p = await get_pool()
-    async with p.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO user_statuses(user_id, log_date, status)
-            VALUES($1,$2,$3)
-            ON CONFLICT(user_id, log_date) DO UPDATE SET status=EXCLUDED.status
-        """, user_id, log_date, status)
-
-async def get_status_history(user_id, log_date=None):
-    p = await get_pool()
-    async with p.acquire() as conn:
-        if log_date:
-            if isinstance(log_date, str):
-                log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
-            return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 AND log_date=$2", user_id, log_date)
-        return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 ORDER BY log_date", user_id)
-
 # ===== Обработчики =====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -147,7 +48,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer("👋 Привет! Давай зарегистрируемся.\nВведи своё ФИО:")
         await state.set_state(Registration.waiting_for_fullname)
     else:
-        kb = admin_kb if user["is_admin"] or message.from_user.id == CREATOR_ID else user_kb
+        kb = user_kb
         await message.answer("✅ Бот активен. Меню доступно ниже:", reply_markup=kb)
 
 @dp.message(Registration.waiting_for_fullname)
@@ -171,85 +72,12 @@ async def reg_phone(message: types.Message, state: FSMContext):
     is_admin = message.from_user.id == CREATOR_ID
     await add_user(message.from_user.id, f"{fullname} ({tabel})", tabel, phone, is_admin)
     await state.clear()
-    kb = admin_kb if is_admin else user_kb
-    await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
+    await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=user_kb)
 
-@dp.message(Text(statuses))
+@dp.message(Text(startswith="🟢") | Text(startswith="🔴") | Text(startswith="🕒") | Text(startswith="📌"))
 async def set_user_status(message: types.Message):
     await update_status(message.from_user.id, message.text)
     await message.answer(f"✅ Твой статус обновлён: {message.text}")
-
-# ===== Админка =====
-@dp.message(Text("📊 Посмотреть всех пользователей"))
-async def show_users(message: types.Message):
-    user = await get_user(message.from_user.id)
-    if not (user["is_admin"] or message.from_user.id == CREATOR_ID):
-        return
-    users = await get_all_users()
-    text = "\n".join([f"{u['full_name']} — {'👑' if u['is_admin'] else ''}" for u in users])
-    await message.answer(f"👥 Все пользователи:\n{text}")
-
-@dp.message(Text("👑 Назначить админа"))
-async def cmd_make_admin(message: types.Message):
-    await message.answer("Введите user_id для назначения админом:")
-    await AdminActions.waiting_for_make_admin.set()
-
-@dp.message(AdminActions.waiting_for_make_admin)
-async def do_make_admin(message: types.Message, state: FSMContext):
-    try:
-        user_id = int(message.text)
-        await make_admin(user_id)
-        await message.answer("✅ Пользователь назначен админом!")
-    except:
-        await message.answer("❌ Ошибка. Введите корректный user_id.")
-    await state.clear()
-
-@dp.message(Text("❌ Убрать админа"))
-async def cmd_revoke_admin(message: types.Message):
-    await message.answer("Введите user_id для снятия админа:")
-    await AdminActions.waiting_for_revoke_admin.set()
-
-@dp.message(AdminActions.waiting_for_revoke_admin)
-async def do_revoke_admin(message: types.Message, state: FSMContext):
-    try:
-        user_id = int(message.text)
-        await revoke_admin(user_id)
-        await message.answer("✅ Пользователь больше не админ.")
-    except:
-        await message.answer("❌ Ошибка. Введите корректный user_id.")
-    await state.clear()
-
-@dp.message(Text("🗑 Удалить пользователя"))
-async def cmd_delete_user(message: types.Message):
-    await message.answer("Введите user_id для удаления:")
-    await AdminActions.waiting_for_delete_user.set()
-
-@dp.message(AdminActions.waiting_for_delete_user)
-async def do_delete_user(message: types.Message, state: FSMContext):
-    try:
-        user_id = int(message.text)
-        await delete_user(user_id)
-        await message.answer("✅ Пользователь удалён.")
-    except:
-        await message.answer("❌ Ошибка. Введите корректный user_id.")
-    await state.clear()
-
-@dp.message(Text("✉️ Сделать рассылку"))
-async def cmd_broadcast(message: types.Message):
-    await message.answer("Введите текст рассылки:")
-    await AdminActions.waiting_for_broadcast.set()
-
-@dp.message(AdminActions.waiting_for_broadcast)
-async def do_broadcast(message: types.Message, state: FSMContext):
-    users = await get_all_users()
-    text = message.text
-    for u in users:
-        try:
-            await bot.send_message(u['user_id'], text)
-        except:
-            pass
-    await message.answer("✅ Рассылка отправлена!")
-    await state.clear()
 
 # ===== Webhook =====
 async def handle(request: web.Request):
@@ -260,7 +88,6 @@ async def handle(request: web.Request):
         return web.Response()
     return web.Response(status=405)
 
-# ===== Запуск веб-сервера =====
 app = web.Application()
 app.router.add_post(f"/{BOT_TOKEN}", handle)
 
@@ -275,6 +102,4 @@ async def on_shutdown():
     await bot.session.close()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(on_startup())
-    web.run_app(app, port=PORT)
+    web.run_app(app, port=PORT, print=None, shutdown_timeout=5)
