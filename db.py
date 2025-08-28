@@ -1,80 +1,80 @@
-# db.py
 import asyncpg
+from datetime import date, datetime
 import os
-from datetime import date
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-pool: asyncpg.Pool | None = None
-
+pool = None
+DB_URL = os.getenv("DATABASE_URL")
 
 async def init_db():
     global pool
-    pool = await asyncpg.create_pool(DATABASE_URL)
-
+    pool = await asyncpg.create_pool(DB_URL)
     async with pool.acquire() as conn:
-        # Создаём таблицу пользователей
+        # Таблица пользователей
         await conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT UNIQUE NOT NULL,
-            tab_number VARCHAR(50),
-            full_name VARCHAR(255),
-            phone VARCHAR(50)
-        )
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                full_name TEXT,
+                tab_number TEXT,
+                phone TEXT,
+                is_admin BOOLEAN DEFAULT FALSE
+            );
         """)
         # Таблица статусов
         await conn.execute("""
-        CREATE TABLE IF NOT EXISTS statuses (
-            id SERIAL PRIMARY KEY,
-            user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            status TEXT NOT NULL,
-            status_date DATE NOT NULL
-        )
+            CREATE TABLE IF NOT EXISTS user_statuses (
+                user_id BIGINT,
+                log_date DATE,
+                status TEXT,
+                PRIMARY KEY(user_id, log_date)
+            );
         """)
 
+# ===== Пользователи =====
+async def add_user(user_id, full_name, tab_number="", phone="", is_admin=False):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users(user_id, full_name, tab_number, phone, is_admin)
+            VALUES($1,$2,$3,$4,$5)
+            ON CONFLICT(user_id) DO NOTHING
+        """, user_id, full_name, tab_number, phone, is_admin)
 
-# === Работа с пользователями ===
-
-async def get_user(user_id: int):
+async def get_user(user_id):
     async with pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
 
+async def get_all_users():
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM users ORDER BY full_name")
 
-async def add_user(user_id: int, tab_number: str, full_name: str, phone: str):
+async def make_admin(user_id):
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET is_admin=TRUE WHERE user_id=$1", user_id)
+
+async def revoke_admin(user_id):
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET is_admin=FALSE WHERE user_id=$1", user_id)
+
+async def delete_user(user_id):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM users WHERE user_id=$1", user_id)
+        await conn.execute("DELETE FROM user_statuses WHERE user_id=$1", user_id)
+
+# ===== Статусы =====
+async def update_status(user_id, status, log_date=None):
+    log_date = log_date or date.today()
+    if isinstance(log_date, str):
+        log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
     async with pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO users (user_id, tab_number, full_name, phone)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (user_id) DO NOTHING
-        """, user_id, tab_number, full_name, phone)
+            INSERT INTO user_statuses(user_id, log_date, status)
+            VALUES($1,$2,$3)
+            ON CONFLICT(user_id, log_date) DO UPDATE SET status=EXCLUDED.status
+        """, user_id, log_date, status)
 
-
-# === Работа со статусами ===
-
-async def set_status(user_id: int, status: str):
-    today = date.today()
+async def get_status_history(user_id, log_date=None):
     async with pool.acquire() as conn:
-        # Если статус за сегодня уже есть — обновляем
-        existing = await conn.fetchrow("""
-            SELECT * FROM statuses WHERE user_id=$1 AND status_date=$2
-        """, user_id, today)
-
-        if existing:
-            await conn.execute("""
-                UPDATE statuses SET status=$1 WHERE user_id=$2 AND status_date=$3
-            """, status, user_id, today)
-        else:
-            await conn.execute("""
-                INSERT INTO statuses (user_id, status, status_date)
-                VALUES ($1, $2, $3)
-            """, user_id, status, today)
-
-
-async def get_status(user_id: int, day: date = None):
-    if day is None:
-        day = date.today()
-    async with pool.acquire() as conn:
-        return await conn.fetchrow("""
-            SELECT status FROM statuses WHERE user_id=$1 AND status_date=$2
-        """, user_id, day)
+        if log_date:
+            if isinstance(log_date, str):
+                log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
+            return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 AND log_date=$2", user_id, log_date)
+        return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 ORDER BY log_date", user_id)
