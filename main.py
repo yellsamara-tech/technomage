@@ -1,9 +1,7 @@
 import os
-import asyncio
 from datetime import date, datetime
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.filters.text import Text
+from aiogram.filters import Command, Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
@@ -15,7 +13,7 @@ from db import init_db, add_user, get_user, get_all_users, make_admin, revoke_ad
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
-CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
+CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))
 
 # ===== Инициализация =====
 storage = MemoryStorage()
@@ -27,6 +25,9 @@ class Registration(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_tabel = State()
     waiting_for_phone = State()
+
+class Broadcast(StatesGroup):
+    waiting_for_text = State()
 
 # ===== Статусы =====
 statuses = ["🟢 Я на работе (СП)", "🔴 Я болею (Б)", "🕒 Я в дороге (СП)", "📌 У меня отгул (Вр)"]
@@ -40,6 +41,15 @@ user_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+admin_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📊 Посмотреть всех пользователей")],
+        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа"), KeyboardButton(text="🗑 Удалить пользователя")],
+        [KeyboardButton(text="✉️ Сделать рассылку"), KeyboardButton(text="📈 Статистика статусов")]
+    ],
+    resize_keyboard=True
+)
+
 # ===== Обработчики =====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -48,7 +58,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer("👋 Привет! Давай зарегистрируемся.\nВведи своё ФИО:")
         await state.set_state(Registration.waiting_for_fullname)
     else:
-        kb = user_kb
+        kb = admin_kb if user["is_admin"] or message.from_user.id == CREATOR_ID else user_kb
         await message.answer("✅ Бот активен. Меню доступно ниже:", reply_markup=kb)
 
 @dp.message(Registration.waiting_for_fullname)
@@ -72,7 +82,8 @@ async def reg_phone(message: types.Message, state: FSMContext):
     is_admin = message.from_user.id == CREATOR_ID
     await add_user(message.from_user.id, f"{fullname} ({tabel})", tabel, phone, is_admin)
     await state.clear()
-    await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=user_kb)
+    kb = admin_kb if is_admin else user_kb
+    await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
 
 @dp.message(Text(startswith="🟢") | Text(startswith="🔴") | Text(startswith="🕒") | Text(startswith="📌"))
 async def set_user_status(message: types.Message):
@@ -88,6 +99,7 @@ async def handle(request: web.Request):
         return web.Response()
     return web.Response(status=405)
 
+# ===== Запуск веб-сервера =====
 app = web.Application()
 app.router.add_post(f"/{BOT_TOKEN}", handle)
 
@@ -102,4 +114,7 @@ async def on_shutdown():
     await bot.session.close()
 
 if __name__ == "__main__":
-    web.run_app(app, port=PORT, print=None, shutdown_timeout=5)
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(on_startup())
+    web.run_app(app, port=PORT)
