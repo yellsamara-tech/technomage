@@ -1,9 +1,8 @@
 import os
-import asyncio
 from datetime import date, datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -11,8 +10,8 @@ from aiohttp import web
 import asyncpg
 
 # ===== Переменные окружения =====
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://your-app.onrender.com")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8304128948:AAGfzX5TIABL3DVKkmynWovRvEEVvtPsTzg")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://dia-804u.onrender.com")
 PORT = int(os.getenv("PORT", 8000))
 CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))
 DB_URL = os.getenv("DATABASE_URL", "")
@@ -23,11 +22,14 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 pool: asyncpg.Pool = None
 
-# ===== FSM =====
+# ===== FSM состояния =====
 class Registration(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_tabel = State()
     waiting_for_phone = State()
+
+class Broadcast(StatesGroup):
+    waiting_for_text = State()
 
 # ===== Статусы =====
 STATUSES = [
@@ -56,7 +58,7 @@ admin_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ===== БД =====
+# ===== База данных =====
 async def init_db():
     global pool
     pool = await asyncpg.create_pool(DB_URL)
@@ -91,6 +93,23 @@ async def get_user(user_id):
     async with pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
 
+async def get_all_users():
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM users ORDER BY full_name")
+
+async def make_admin(user_id):
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET is_admin=TRUE WHERE user_id=$1", user_id)
+
+async def revoke_admin(user_id):
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET is_admin=FALSE WHERE user_id=$1", user_id)
+
+async def delete_user(user_id):
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM users WHERE user_id=$1", user_id)
+        await conn.execute("DELETE FROM user_statuses WHERE user_id=$1", user_id)
+
 async def update_status(user_id, status, log_date=None):
     log_date = log_date or date.today()
     if isinstance(log_date, str):
@@ -102,7 +121,15 @@ async def update_status(user_id, status, log_date=None):
             ON CONFLICT(user_id, log_date) DO UPDATE SET status=EXCLUDED.status
         """, user_id, log_date, status)
 
-# ===== Хэндлеры =====
+async def get_status_history(user_id, log_date=None):
+    async with pool.acquire() as conn:
+        if log_date:
+            if isinstance(log_date, str):
+                log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
+            return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 AND log_date=$2", user_id, log_date)
+        return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 ORDER BY log_date", user_id)
+
+# ===== Обработчики =====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
@@ -146,11 +173,15 @@ async def set_user_status(message: types.Message):
 async def handle(request: web.Request):
     try:
         data = await request.json()
-        update = types.Update.model_validate(data)   # aiogram 3.x
+        update = types.Update.model_validate(data)
         await dp.feed_update(bot, update)
     except Exception as e:
         print("❌ Ошибка обработки апдейта:", e)
     return web.Response()
+
+# ===== Healthcheck =====
+async def healthcheck(request):
+    return web.Response(text="✅ Bot is running")
 
 # ===== Запуск =====
 async def on_startup(app: web.Application):
@@ -167,9 +198,10 @@ async def on_shutdown(app: web.Application):
 def main():
     app = web.Application()
     app.router.add_post(f"/{BOT_TOKEN}", handle)
+    app.router.add_get("/", healthcheck)
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
-    web.run_app(app, port=PORT)
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
     main()
