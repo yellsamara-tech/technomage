@@ -1,265 +1,310 @@
 import os
 import asyncio
 from datetime import date, datetime
+from aiohttp import web
+import requests
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiohttp import web
-import asyncpg
 
-# ===== Переменные окружения =====
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8304128948:AAGfzX5TIABL3DVKkmynWovRvEEVvtPsTzg")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://dia-804u.onrender.com")
-PORT = int(os.getenv("PORT", 8000))
-CREATOR_ID = int(os.getenv("CREATOR_ID", "452908347"))
-DB_URL = os.getenv("DATABASE_URL")
+# ====== ВАЖНО: импорт функций БД из db.py ======
+from db import (
+    init_db, add_user, get_user, get_all_users,
+    make_admin, revoke_admin, delete_user,
+    update_status, get_status_history
+)
 
-# ===== Инициализация =====
+# ========= Переменные окружения =========
+BOT_TOKEN   = os.getenv("BOT_TOKEN",   "8304128948:AAGfzX5TIABL3DVKkmynWovRvEEVvtPsTzg")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://dia-804u.onrender.com/webhook")  # именно /webhook
+PORT        = int(os.getenv("PORT", "8000"))
+CREATOR_ID  = int(os.getenv("CREATOR_ID", "452908347"))
+
+# ========= Инициализация бота/диспетчера =========
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
-pool = None
 
-# ===== FSM состояния =====
+# ========= FSM =========
 class Registration(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_tabel = State()
     waiting_for_phone = State()
 
-class AdminActions(StatesGroup):
-    waiting_for_user_id = State()
-    waiting_for_message = State()
+class Broadcast(StatesGroup):
+    waiting_for_text = State()
 
-# ===== Статусы =====
-statuses = ["🟢 На работе (СП)", "🔴 Болезнь (Б)", "🕒 В дороге (СП)", "📌 Отгул (Вр)"]
+# ========= Статусы (кнопки) =========
+statuses = [
+    "🟢 Я на работе (СП)",
+    "🔴 Я болею (Б)",
+    "🕒 Я в дороге (СП)",
+    "📌 У меня отгул (Вр)"
+]
 
-# ===== Клавиатуры =====
 user_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(statuses[0]), KeyboardButton(statuses[1])],
-        [KeyboardButton(statuses[2]), KeyboardButton(statuses[3])]
+        [KeyboardButton(text=statuses[0]), KeyboardButton(text=statuses[1])],
+        [KeyboardButton(text=statuses[2]), KeyboardButton(text=statuses[3])]
     ],
     resize_keyboard=True
 )
 
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton("📊 Посмотреть всех пользователей")],
-        [KeyboardButton("👑 Назначить админа"), KeyboardButton("❌ Убрать админа"), KeyboardButton("🗑 Удалить пользователя")],
-        [KeyboardButton("✉️ Сделать рассылку"), KeyboardButton("📈 Статистика статусов")]
+        [KeyboardButton(text="📊 Посмотреть всех пользователей")],
+        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа"), KeyboardButton(text="🗑 Удалить пользователя")],
+        [KeyboardButton(text="✉️ Сделать рассылку"), KeyboardButton(text="📈 Статистика статусов")]
     ],
     resize_keyboard=True
 )
 
-# ===== Инициализация базы =====
-async def init_db():
-    global pool
-    pool = await asyncpg.create_pool(DB_URL)
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                full_name TEXT,
-                tab_number TEXT,
-                phone TEXT,
-                is_admin BOOLEAN DEFAULT FALSE
-            );
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_statuses (
-                user_id BIGINT,
-                log_date DATE,
-                status TEXT,
-                PRIMARY KEY(user_id, log_date)
-            );
-        """)
+# ========= Хелперы =========
+async def is_admin(user_id: int) -> bool:
+    u = await get_user(user_id)
+    if not u:
+        return False
+    return bool(u["is_admin"] or (user_id == CREATOR_ID))
 
-# ===== Функции работы с БД =====
-async def add_user(user_id, full_name, tab_number="", phone="", is_admin=False):
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users(user_id, full_name, tab_number, phone, is_admin)
-            VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id) DO NOTHING
-        """, user_id, full_name, tab_number, phone, is_admin)
-
-async def get_user(user_id):
-    async with pool.acquire() as conn:
-        return await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
-
-async def get_all_users():
-    async with pool.acquire() as conn:
-        return await conn.fetch("SELECT * FROM users ORDER BY full_name")
-
-async def make_admin(user_id):
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET is_admin=TRUE WHERE user_id=$1", user_id)
-
-async def revoke_admin(user_id):
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET is_admin=FALSE WHERE user_id=$1", user_id)
-
-async def delete_user(user_id):
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM users WHERE user_id=$1", user_id)
-        await conn.execute("DELETE FROM user_statuses WHERE user_id=$1", user_id)
-
-async def update_status(user_id, status, log_date=None):
-    log_date = log_date or date.today()
-    if isinstance(log_date, str):
-        log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
-    async with pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO user_statuses(user_id, log_date, status)
-            VALUES($1,$2,$3)
-            ON CONFLICT(user_id, log_date) DO UPDATE SET status=EXCLUDED.status
-        """, user_id, log_date, status)
-
-async def get_status_history(user_id, log_date=None):
-    async with pool.acquire() as conn:
-        if log_date:
-            if isinstance(log_date, str):
-                log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
-            return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 AND log_date=$2", user_id, log_date)
-        return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 ORDER BY log_date", user_id)
-
-# ===== Обработчики =====
+# ========= Хэндлеры =========
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
     if not user:
-        await message.answer("👋 Привет! Давай зарегистрируемся.\nВведи своё ФИО:")
+        await message.answer(
+            "👋 Привет! Давай зарегистрируемся.\n"
+            "Введи своё ФИО:"
+        )
         await state.set_state(Registration.waiting_for_fullname)
     else:
-        kb = admin_kb if user["is_admin"] or message.from_user.id == CREATOR_ID else user_kb
+        kb = admin_kb if await is_admin(message.from_user.id) else user_kb
         await message.answer("✅ Бот активен. Меню доступно ниже:", reply_markup=kb)
 
 @dp.message(Registration.waiting_for_fullname)
 async def reg_fullname(message: types.Message, state: FSMContext):
-    await state.update_data(fullname=message.text)
+    await state.update_data(fullname=message.text.strip())
     await message.answer("✍️ Теперь введи свой табельный номер:")
     await state.set_state(Registration.waiting_for_tabel)
 
 @dp.message(Registration.waiting_for_tabel)
 async def reg_tabel(message: types.Message, state: FSMContext):
-    await state.update_data(tabel=message.text)
+    await state.update_data(tabel=message.text.strip())
     await message.answer("📱 Теперь введи номер телефона:")
     await state.set_state(Registration.waiting_for_phone)
 
 @dp.message(Registration.waiting_for_phone)
 async def reg_phone(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    fullname = data["fullname"]
-    tabel = data["tabel"]
-    phone = message.text
-    is_admin = message.from_user.id == CREATOR_ID
-    await add_user(message.from_user.id, f"{fullname} ({tabel})", tabel, phone, is_admin)
+    fullname = data.get("fullname", "").strip()
+    tabel = data.get("tabel", "").strip()
+    phone = message.text.strip()
+    is_admin_flag = (message.from_user.id == CREATOR_ID)
+
+    # Сохраняем пользователя
+    await add_user(
+        user_id=message.from_user.id,
+        full_name=f"{fullname} ({tabel})" if tabel else fullname,
+        tab_number=tabel,
+        phone=phone,
+        is_admin=is_admin_flag
+    )
     await state.clear()
-    kb = admin_kb if is_admin else user_kb
+
+    kb = admin_kb if is_admin_flag else user_kb
     await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
 
+# Установка статуса
 @dp.message(lambda m: m.text in statuses)
-async def set_user_status(message: types.Message):
+async def set_user_status_handler(message: types.Message):
     await update_status(message.from_user.id, message.text)
     await message.answer(f"✅ Твой статус обновлён: {message.text}")
 
-# ===== Админ функции =====
-@dp.message(lambda m: m.text in ["📊 Посмотреть всех пользователей"] and (m.from_user.id==CREATOR_ID))
-async def view_all_users(message: types.Message):
+# ======== Админка ========
+
+# Список всех пользователей
+@dp.message(lambda m: m.text == "📊 Посмотреть всех пользователей")
+async def admin_show_users(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        return
     users = await get_all_users()
-    text = "\n".join([f"{u['full_name']} - {'Админ' if u['is_admin'] else 'Пользователь'}" for u in users])
-    await message.answer(f"👥 Список пользователей:\n{text}")
+    if not users:
+        await message.answer("Пока нет зарегистрированных пользователей.")
+        return
+    lines = []
+    for u in users:
+        role = "🛡️ Админ" if u["is_admin"] else "👤 Пользователь"
+        lines.append(f"{u['user_id']} | {u['full_name']} | {role}")
+    await message.answer("👥 Все пользователи:\n" + "\n".join(lines))
 
-@dp.message(lambda m: m.text in ["👑 Назначить админа"])
-async def cmd_make_admin(message: types.Message, state: FSMContext):
-    await message.answer("Введите user_id пользователя для назначения админом:")
-    await state.set_state(AdminActions.waiting_for_user_id)
-    await state.update_data(action="make_admin")
-
-@dp.message(lambda m: m.text in ["❌ Убрать админа"])
-async def cmd_revoke_admin(message: types.Message, state: FSMContext):
-    await message.answer("Введите user_id пользователя для снятия админа:")
-    await state.set_state(AdminActions.waiting_for_user_id)
-    await state.update_data(action="revoke_admin")
-
-@dp.message(lambda m: m.text in ["🗑 Удалить пользователя"])
-async def cmd_delete_user(message: types.Message, state: FSMContext):
-    await message.answer("Введите user_id пользователя для удаления:")
-    await state.set_state(AdminActions.waiting_for_user_id)
-    await state.update_data(action="delete_user")
-
-@dp.message(AdminActions.waiting_for_user_id)
-async def handle_admin_user_id(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    action = data["action"]
-    user_id = int(message.text)
-    if action=="make_admin":
-        await make_admin(user_id)
-        await message.answer("✅ Пользователь назначен админом")
-    elif action=="revoke_admin":
-        await revoke_admin(user_id)
-        await message.answer("✅ Админские права сняты")
-    elif action=="delete_user":
-        await delete_user(user_id)
-        await message.answer("✅ Пользователь удалён")
-    await state.clear()
-
-@dp.message(lambda m: m.text in ["✉️ Сделать рассылку"])
-async def cmd_broadcast(message: types.Message, state: FSMContext):
-    await message.answer("Введите текст рассылки:")
-    await state.set_state(AdminActions.waiting_for_message)
-
-@dp.message(AdminActions.waiting_for_message)
-async def handle_broadcast(message: types.Message, state: FSMContext):
+# Назначить админа (inline список)
+@dp.message(lambda m: m.text == "👑 Назначить админа")
+async def admin_assign(message: types.Message):
+    if message.from_user.id != CREATOR_ID:
+        await message.answer("⛔ Только создатель может назначать админов.")
+        return
     users = await get_all_users()
-    count = 0
+    candidates = [u for u in users if not u["is_admin"]]
+    if not candidates:
+        await message.answer("Нет пользователей для назначения.")
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=u["full_name"], callback_data=f"makeadmin_{u['user_id']}")]
+            for u in candidates
+        ]
+    )
+    await message.answer("Выбери пользователя для назначения админом:", reply_markup=kb)
+
+@dp.callback_query(lambda c: c.data.startswith("makeadmin_"))
+async def callback_makeadmin(call: types.CallbackQuery):
+    if call.from_user.id != CREATOR_ID:
+        await call.answer("Недостаточно прав", show_alert=True)
+        return
+    user_id = int(call.data.split("_", 1)[1])
+    await make_admin(user_id)
+    await call.message.answer(f"✅ Пользователь {user_id} назначен админом.")
+    await call.answer()
+
+# Убрать админа (inline список)
+@dp.message(lambda m: m.text == "❌ Убрать админа")
+async def admin_remove(message: types.Message):
+    if message.from_user.id != CREATOR_ID:
+        await message.answer("⛔ Только создатель может снимать админов.")
+        return
+    users = await get_all_users()
+    admins = [u for u in users if u["is_admin"] and u["user_id"] != CREATOR_ID]
+    if not admins:
+        await message.answer("Нет админов для снятия.")
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=u["full_name"], callback_data=f"removeadmin_{u['user_id']}")]
+            for u in admins
+        ]
+    )
+    await message.answer("Выбери админа для снятия прав:", reply_markup=kb)
+
+@dp.callback_query(lambda c: c.data.startswith("removeadmin_"))
+async def callback_removeadmin(call: types.CallbackQuery):
+    if call.from_user.id != CREATOR_ID:
+        await call.answer("Недостаточно прав", show_alert=True)
+        return
+    user_id = int(call.data.split("_", 1)[1])
+    await revoke_admin(user_id)
+    await call.message.answer(f"✅ Пользователь {user_id} лишён прав админа.")
+    await call.answer()
+
+# Удалить пользователя (inline список)
+@dp.message(lambda m: m.text == "🗑 Удалить пользователя")
+async def admin_delete_user(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        return
+    users = await get_all_users()
+    deletable = [u for u in users if u["user_id"] != CREATOR_ID]
+    if not deletable:
+        await message.answer("Нет пользователей для удаления.")
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=u["full_name"], callback_data=f"deleteuser_{u['user_id']}")]
+            for u in deletable
+        ]
+    )
+    await message.answer("Выбери пользователя для удаления:", reply_markup=kb)
+
+@dp.callback_query(lambda c: c.data.startswith("deleteuser_"))
+async def callback_delete_user(call: types.CallbackQuery):
+    if not await is_admin(call.from_user.id):
+        await call.answer("Недостаточно прав", show_alert=True)
+        return
+    user_id = int(call.data.split("_", 1)[1])
+    await delete_user(user_id)
+    await call.message.answer(f"✅ Пользователь {user_id} удалён.")
+    await call.answer()
+
+# Рассылка
+@dp.message(lambda m: m.text == "✉️ Сделать рассылку")
+async def admin_broadcast(message: types.Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    await message.answer("✍️ Введите текст рассылки:")
+    await state.set_state(Broadcast.waiting_for_text)
+
+@dp.message(Broadcast.waiting_for_text)
+async def send_broadcast(message: types.Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        await state.clear()
+        return
+    text = message.text
+    users = await get_all_users()
+    success = 0
+    fail = 0
     for u in users:
         try:
-            await bot.send_message(u["user_id"], message.text)
-            count += 1
-        except:
-            pass
-    await message.answer(f"✅ Рассылка выполнена. Сообщение отправлено {count} пользователям.")
+            await bot.send_message(u["user_id"], f"📢 Рассылка:\n\n{text}")
+            success += 1
+        except Exception:
+            fail += 1
+    await message.answer(f"✅ Рассылка завершена.\nУспешно: {success}, Ошибки: {fail}")
     await state.clear()
 
-@dp.message(lambda m: m.text in ["📈 Статистика статусов"])
-async def cmd_status_stats(message: types.Message):
+# Статистика статусов
+@dp.message(lambda m: m.text == "📈 Статистика статусов")
+async def admin_status_stats(message: types.Message):
+    if not await is_admin(message.from_user.id):
+        return
     today = date.today()
     users = await get_all_users()
-    stats = {}
-    for status in statuses:
-        stats[status] = 0
+    counters = {s: 0 for s in statuses}
     for u in users:
         rows = await get_status_history(u["user_id"], today)
         if rows:
-            stats[rows[0]["status"]] +=1
-    text = "\n".join([f"{k}: {v}" for k,v in stats.items()])
-    await message.answer(f"📊 Статистика на {today}:\n{text}")
+            # берем последнюю запись за сегодня
+            last = rows[-1]
+            st = last["status"]
+            if st in counters:
+                counters[st] += 1
+    lines = [f"{k}: {v}" for k, v in counters.items()]
+    await message.answer(f"📊 Статистика статусов на {today}:\n" + "\n".join(lines))
 
-# ===== Webhook =====
-async def handle(request: web.Request):
-    if request.method == "POST":
+# ========= Webhook handlers (aiohttp) =========
+async def index(request: web.Request):
+    return web.Response(text="OK: bot is running")
+
+async def webhook_get(request: web.Request):
+    # чтоб руками заходить без 405
+    return web.Response(text="Webhook endpoint. Use POST from Telegram.")
+
+async def webhook_post(request: web.Request):
+    try:
         data = await request.json()
-        update = types.Update(**data)
+    except Exception:
+        return web.Response(status=400, text="Bad JSON")
+
+    try:
+        update = types.Update.model_validate(data)
+    except Exception as e:
+        print("Update validate error:", e)
+        return web.Response(status=400, text="Bad Update")
+
+    try:
         await dp.feed_update(bot, update)
-        return web.Response()
-    return web.Response(status=405)
+    except Exception as e:
+        print("feed_update error:", e)
+    return web.Response(text="ok")
 
-# ===== Запуск веб-сервера =====
 app = web.Application()
-app.router.add_post(f"/{BOT_TOKEN}", handle)
+app.router.add_get("/", index)
+app.router.add_get("/webhook", webhook_get)
+app.router.add_post("/webhook", webhook_post)
 
-async def on_startup():
-    await init_db()
-    await bot.delete_webhook()
-    await bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
-    print("✅ Webhook установлен, бот готов!")
-
-async def on_shutdown():
-    await bot.delete_webhook()
-    await bot.session.close()
-
-if __name__ == "__main__":
-    web.run_app(app, port=PORT, on_startup=[on_startup], on_shutdown=[on_shutdown])
+# ========= Startup / Shutdown =========
+async def on_startup(app: web.Application):
+    print("Starting up...")
