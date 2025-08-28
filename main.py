@@ -1,6 +1,6 @@
 import os
 import asyncio
-from datetime import date, datetime, time, timedelta
+from datetime import date
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Update
@@ -9,13 +9,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiohttp import web
 from db import (
-    init_db, add_user, get_user, update_status, get_all_users, 
+    init_db, add_user, get_user, update_status, get_all_users,
     get_admins, make_admin, revoke_admin, delete_user, get_status_history, get_users_without_status_today
 )
 
 # ----- Переменные окружения -----
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8304128948:AAGfzX5TIABL3DVKkmynWovRvEEVvtPsTzg")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://dia-804u.onrender.com")
 PORT = int(os.getenv("PORT", 8000))
 CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))
 
@@ -221,16 +221,25 @@ async def handle(request: web.Request):
     await dp.feed_update(bot, update)
     return web.Response()
 
+# ✅ health-check для Render
+async def health(request: web.Request):
+    return web.Response(text="✅ Bot is running!")
+
 app = web.Application()
 app.router.add_post(f"/{BOT_TOKEN}", handle)
+app.router.add_get("/", health)
 
 async def on_startup():
+    print("🚀 Bot started")
     await init_db()
     await bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
 
 async def on_shutdown():
+    print("🛑 Bot stopped")
     await bot.delete_webhook()
     await bot.session.close()
 
 if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.create_task(on_startup())
     web.run_app(app, port=PORT, print=None)
