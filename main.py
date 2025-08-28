@@ -1,4 +1,5 @@
 import os
+import asyncio
 from datetime import date, datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command, Text
@@ -7,27 +8,26 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiohttp import web
-from db import init_db, add_user, get_user, get_all_users, make_admin, revoke_admin, delete_user, update_status, get_status_history
+import asyncpg
 
 # ===== Переменные окружения =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8000))
-CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))
+CREATOR_ID = int(os.getenv("CREATOR_ID", 0))
+DB_URL = os.getenv("DATABASE_URL")
 
 # ===== Инициализация =====
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
+pool = None
 
 # ===== FSM состояния =====
 class Registration(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_tabel = State()
     waiting_for_phone = State()
-
-class Broadcast(StatesGroup):
-    waiting_for_text = State()
 
 # ===== Статусы =====
 statuses = ["🟢 Я на работе (СП)", "🔴 Я болею (Б)", "🕒 Я в дороге (СП)", "📌 У меня отгул (Вр)"]
@@ -49,6 +49,52 @@ admin_kb = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True
 )
+
+# ===== Инициализация базы =====
+async def init_db():
+    global pool
+    pool = await asyncpg.create_pool(DB_URL)
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                full_name TEXT,
+                tab_number TEXT,
+                phone TEXT,
+                is_admin BOOLEAN DEFAULT FALSE
+            );
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_statuses (
+                user_id BIGINT,
+                log_date DATE,
+                status TEXT,
+                PRIMARY KEY(user_id, log_date)
+            );
+        """)
+
+# ===== Функции работы с БД =====
+async def add_user(user_id, full_name, tab_number="", phone="", is_admin=False):
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users(user_id, full_name, tab_number, phone, is_admin)
+            VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id) DO NOTHING
+        """, user_id, full_name, tab_number, phone, is_admin)
+
+async def get_user(user_id):
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
+
+async def update_status(user_id, status, log_date=None):
+    log_date = log_date or date.today()
+    if isinstance(log_date, str):
+        log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO user_statuses(user_id, log_date, status)
+            VALUES($1,$2,$3)
+            ON CONFLICT(user_id, log_date) DO UPDATE SET status=EXCLUDED.status
+        """, user_id, log_date, status)
 
 # ===== Обработчики =====
 @dp.message(Command("start"))
@@ -85,7 +131,7 @@ async def reg_phone(message: types.Message, state: FSMContext):
     kb = admin_kb if is_admin else user_kb
     await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
 
-@dp.message(Text(startswith="🟢") | Text(startswith="🔴") | Text(startswith="🕒") | Text(startswith="📌"))
+@dp.message(Text(statuses))
 async def set_user_status(message: types.Message):
     await update_status(message.from_user.id, message.text)
     await message.answer(f"✅ Твой статус обновлён: {message.text}")
@@ -114,7 +160,6 @@ async def on_shutdown():
     await bot.session.close()
 
 if __name__ == "__main__":
-    import asyncio
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(on_startup())
+    loop.create_task(on_startup())
     web.run_app(app, port=PORT)
