@@ -308,3 +308,19 @@ app.router.add_post("/webhook", webhook_post)
 # ========= Startup / Shutdown =========
 async def on_startup(app: web.Application):
     print("Starting up...")
+    # инициализация БД
+    await init_db()
+    # установка вебхука
+    await bot.set_webhook(WEBHOOK_URL)
+
+async def on_shutdown(app: web.Application):
+    print("Shutting down...")
+    await bot.delete_webhook()
+    await bot.session.close()
+
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+# ========= Entry point =========
+if __name__ == "__main__":
+    web.run_app(app, port=PORT)
