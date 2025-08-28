@@ -3,7 +3,7 @@ import asyncio
 from datetime import date, datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -11,35 +11,37 @@ from aiohttp import web
 import asyncpg
 
 # ===== Переменные окружения =====
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8304128948:AAGfzX5TIABL3DVKkmynWovRvEEVvtPsTzg")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://dia-804u.onrender.com")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://your-app.onrender.com")
 PORT = int(os.getenv("PORT", 8000))
 CREATOR_ID = int(os.getenv("CREATOR_ID", "0"))
-DB_URL = os.getenv("DATABASE_URL")  # PostgreSQL URL
+DB_URL = os.getenv("DATABASE_URL", "")
 
 # ===== Инициализация =====
 storage = MemoryStorage()
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=storage)
-pool = None
+pool: asyncpg.Pool = None
 
-# ===== FSM состояния =====
+# ===== FSM =====
 class Registration(StatesGroup):
     waiting_for_fullname = State()
     waiting_for_tabel = State()
     waiting_for_phone = State()
 
-class Broadcast(StatesGroup):
-    waiting_for_text = State()
-
 # ===== Статусы =====
-statuses = ["🟢 Я на работе (СП)", "🔴 Я болею (Б)", "🕒 Я в дороге (СП)", "📌 У меня отгул (Вр)"]
+STATUSES = [
+    "🟢 Я на работе (СП)",
+    "🔴 Я болею (Б)",
+    "🕒 Я в дороге (СП)",
+    "📌 У меня отгул (Вр)"
+]
 
 # ===== Клавиатуры =====
 user_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text=statuses[0]), KeyboardButton(text=statuses[1])],
-        [KeyboardButton(text=statuses[2]), KeyboardButton(text=statuses[3])]
+        [KeyboardButton(text=STATUSES[0]), KeyboardButton(text=STATUSES[1])],
+        [KeyboardButton(text=STATUSES[2]), KeyboardButton(text=STATUSES[3])]
     ],
     resize_keyboard=True
 )
@@ -47,13 +49,14 @@ user_kb = ReplyKeyboardMarkup(
 admin_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📊 Посмотреть всех пользователей")],
-        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа"), KeyboardButton(text="🗑 Удалить пользователя")],
+        [KeyboardButton(text="👑 Назначить админа"), KeyboardButton(text="❌ Убрать админа"),
+         KeyboardButton(text="🗑 Удалить пользователя")],
         [KeyboardButton(text="✉️ Сделать рассылку"), KeyboardButton(text="📈 Статистика статусов")]
     ],
     resize_keyboard=True
 )
 
-# ===== Инициализация базы =====
+# ===== БД =====
 async def init_db():
     global pool
     pool = await asyncpg.create_pool(DB_URL)
@@ -76,34 +79,17 @@ async def init_db():
             );
         """)
 
-# ===== Функции работы с БД =====
 async def add_user(user_id, full_name, tab_number="", phone="", is_admin=False):
     async with pool.acquire() as conn:
         await conn.execute("""
             INSERT INTO users(user_id, full_name, tab_number, phone, is_admin)
-            VALUES($1,$2,$3,$4,$5) ON CONFLICT(user_id) DO NOTHING
+            VALUES($1,$2,$3,$4,$5)
+            ON CONFLICT(user_id) DO NOTHING
         """, user_id, full_name, tab_number, phone, is_admin)
 
 async def get_user(user_id):
     async with pool.acquire() as conn:
         return await conn.fetchrow("SELECT * FROM users WHERE user_id=$1", user_id)
-
-async def get_all_users():
-    async with pool.acquire() as conn:
-        return await conn.fetch("SELECT * FROM users ORDER BY full_name")
-
-async def make_admin(user_id):
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET is_admin=TRUE WHERE user_id=$1", user_id)
-
-async def revoke_admin(user_id):
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE users SET is_admin=FALSE WHERE user_id=$1", user_id)
-
-async def delete_user(user_id):
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM users WHERE user_id=$1", user_id)
-        await conn.execute("DELETE FROM user_statuses WHERE user_id=$1", user_id)
 
 async def update_status(user_id, status, log_date=None):
     log_date = log_date or date.today()
@@ -116,15 +102,7 @@ async def update_status(user_id, status, log_date=None):
             ON CONFLICT(user_id, log_date) DO UPDATE SET status=EXCLUDED.status
         """, user_id, log_date, status)
 
-async def get_status_history(user_id, log_date=None):
-    async with pool.acquire() as conn:
-        if log_date:
-            if isinstance(log_date, str):
-                log_date = datetime.strptime(log_date, "%Y-%m-%d").date()
-            return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 AND log_date=$2", user_id, log_date)
-        return await conn.fetch("SELECT * FROM user_statuses WHERE user_id=$1 ORDER BY log_date", user_id)
-
-# ===== Обработчики =====
+# ===== Хэндлеры =====
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user = await get_user(message.from_user.id)
@@ -159,33 +137,39 @@ async def reg_phone(message: types.Message, state: FSMContext):
     kb = admin_kb if is_admin else user_kb
     await message.answer("✅ Регистрация завершена! Выбери статус:", reply_markup=kb)
 
-@dp.message(lambda m: m.text in statuses)
+@dp.message(lambda m: m.text in STATUSES)
 async def set_user_status(message: types.Message):
     await update_status(message.from_user.id, message.text)
     await message.answer(f"✅ Твой статус обновлён: {message.text}")
 
 # ===== Webhook =====
 async def handle(request: web.Request):
-    if request.method == "POST":
+    try:
         data = await request.json()
-        update = types.Update(**data)
+        update = types.Update.model_validate(data)   # aiogram 3.x
         await dp.feed_update(bot, update)
-        return web.Response()
-    return web.Response(status=405)  # если GET → 405
+    except Exception as e:
+        print("❌ Ошибка обработки апдейта:", e)
+    return web.Response()
 
-# ===== Запуск веб-сервера =====
-app = web.Application()
-app.router.add_post(f"/{BOT_TOKEN}", handle)  # путь = токен
-
-async def on_startup():
+# ===== Запуск =====
+async def on_startup(app: web.Application):
     await init_db()
     await bot.delete_webhook()
     await bot.set_webhook(f"{WEBHOOK_URL}/{BOT_TOKEN}")
     print("✅ Webhook установлен, бот готов!")
 
-async def on_shutdown():
+async def on_shutdown(app: web.Application):
     await bot.delete_webhook()
     await bot.session.close()
+    await pool.close()
+
+def main():
+    app = web.Application()
+    app.router.add_post(f"/{BOT_TOKEN}", handle)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+    web.run_app(app, port=PORT)
 
 if __name__ == "__main__":
-    web.run_app(app, port=PORT, print=None)
+    main()
